@@ -1,3 +1,27 @@
+"""
+app.py
+======
+FollowUp Dashboard — Streamlit build.
+
+Run with:
+    streamlit run app.py
+
+Reads the CSV produced by data_pull.py (default: followup_dashboard.csv in
+this same folder), re-applies the same normalisation data_pull.py used
+(so dtypes survive the CSV round-trip), lets the person pick a city/cluster
+from a button-row list in the sidebar (or "Pan-India" for every cluster
+combined -- no Python-level hardcoding of which city is shown), and
+renders:
+  - Card 1 (City snapshot): Meetings done / Closed on spot /
+    Eligible for follow-ups / No audio notes
+  - Due Today section: completion %, pending + top-pending TL, the
+    Agreed+Another / P1+P2 / Others split, and a click-driven
+    TL -> SC -> Lead drill-down (click a table row to go one level deeper;
+    click the section header to open/close the drill-down itself).
+
+All the actual math lives in metrics.py, kept free of Streamlit calls so it
+stays testable on its own.
+"""
 from __future__ import annotations
 
 import os
@@ -408,36 +432,34 @@ st.markdown(
     .stMainMenu { display: none !important; }
 
     /* ---- (2b) "Hosted with Streamlit" badge + creator profile ----
-       Streamlit's CSS modules build classes like
-       "_container_gzau3_1  _viewerBadge_1j65n_23" on the badge <a>
-       and "_profileContainer_gzau3_53" on the creator's profile <div>.
-       The trailing "_NN" suffix is a hash that changes on every deploy,
-       so we use attribute-contains selectors that don't depend on it.
-       Every well-known variant covered so far is listed below. */
+       Hardened for specificity: prefixed with `html body`, class
+       selectors duplicated ([class*="x"][class*="x"]) to bump
+       specificity above anything Streamlit's own stylesheet can rank,
+       and every hiding property Streamlit could target is set. */
 
-    /* The badge anchor itself -- three independent ways to hit it */
-    a[href="https://streamlit.io/cloud"],
-    a[href*="streamlit.io/cloud"],
-    a[href*="streamlit.io"],
-    a[href*="share.streamlit.io"] { display: none !important; }
-
-    /* The badge by its CSS-module class fragments */
-    [class*="viewerBadge"],
-    [class*="_viewerBadge"],
-    [class*="_container_gzau3"],
-    [class*="_link_gzau3"] { display: none !important; }
-
-    /* The creator profile block */
-    [class*="_profileContainer_"],
-    [class*="_profilePreview_"],
-    [class*="_profileImage_"],
-    [class*="_profileBadge_"],
-    [class*="_profileLink_"] { display: none !important; }
-
-    /* Nuclear last-resort: any fixed-position anchor pointing anywhere
-       under streamlit.io (covers a rename of the badge class in a
-       future release). */
-    body a[href*="streamlit"] { display: none !important; }
+    html body a[href*="streamlit.io"],
+    html body a[href*="share.streamlit.io"],
+    html body a[class*="viewerBadge"][class*="viewerBadge"],
+    html body a[class*="_viewerBadge"][class*="_viewerBadge"],
+    html body a[class*="_container_gzau3"][class*="_container_gzau3"],
+    html body div[class*="_link_gzau3"][class*="_link_gzau3"],
+    html body div[class*="_profileContainer_"][class*="_profileContainer_"],
+    html body div[class*="_profilePreview_"][class*="_profilePreview_"],
+    html body img[class*="_profileImage_"][class*="_profileImage_"],
+    html body [data-testid="appCreatorAvatar"] {
+        display: none !important;
+        visibility: hidden !important;
+        opacity: 0 !important;
+        height: 0 !important;
+        width: 0 !important;
+        max-height: 0 !important;
+        max-width: 0 !important;
+        overflow: hidden !important;
+        position: fixed !important;
+        left: -9999px !important;
+        top: -9999px !important;
+        pointer-events: none !important;
+    }
 
     /* ==== Dark navy sidebar (mimics the reference dashboard) ==== */
     [data-testid="stSidebar"] {
