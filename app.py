@@ -1,27 +1,3 @@
-"""
-app.py
-======
-FollowUp Dashboard — Streamlit build.
-
-Run with:
-    streamlit run app.py
-
-Reads the CSV produced by data_pull.py (default: followup_dashboard.csv in
-this same folder), re-applies the same normalisation data_pull.py used
-(so dtypes survive the CSV round-trip), lets the person pick a city/cluster
-from a button-row list in the sidebar (or "Pan-India" for every cluster
-combined -- no Python-level hardcoding of which city is shown), and
-renders:
-  - Card 1 (City snapshot): Meetings done / Closed on spot /
-    Eligible for follow-ups / No audio notes
-  - Due Today section: completion %, pending + top-pending TL, the
-    Agreed+Another / P1+P2 / Others split, and a click-driven
-    TL -> SC -> Lead drill-down (click a table row to go one level deeper;
-    click the section header to open/close the drill-down itself).
-
-All the actual math lives in metrics.py, kept free of Streamlit calls so it
-stays testable on its own.
-"""
 from __future__ import annotations
 
 import os
@@ -400,22 +376,51 @@ st.markdown(
     header[data-testid="stHeader"] { background: transparent; }
     .block-container { padding-top: 2rem; padding-bottom: 3rem; max-width: 1400px; }
 
-    /* ==== Hide Streamlit-owned chrome for a clean public look ====
-       toolbarMode="minimal" in .streamlit/config.toml already kills
-       the top-right hamburger / fork / deploy buttons; the rules below
-       cover the "Hosted with Streamlit" badge and any residual footer
-       decoration that config can't touch. */
-    #MainMenu { visibility: hidden !important; }
-    footer { visibility: hidden !important; }
+    /* ==== Hide Streamlit-Cloud-owned chrome for a clean public look ====
+       Two families here, because they're rendered by two different layers:
+       (1) The core Streamlit runtime chrome (main menu, footer, deploy
+           button, status widget). toolbarMode="minimal" in
+           .streamlit/config.toml covers most of this, but we belt-and-brace
+           with CSS in case a future Streamlit release stops honoring the
+           config for some element.
+       (2) The Streamlit CLOUD-specific chrome (Fork button, GitHub icon,
+           creator-profile preview badge in the bottom corner). The Cloud
+           chrome is added by share.streamlit.io on top of the runtime, so
+           config.toml doesn't touch it at all -- only CSS does. */
+
+    /* ---- (1) Core Streamlit runtime chrome ---- */
+    #MainMenu { visibility: hidden !important; display: none !important; }
+    footer { visibility: hidden !important; display: none !important; }
+    header[data-testid="stHeader"] [data-testid="stMainMenu"] { display: none !important; }
     [data-testid="stDeployButton"] { display: none !important; }
     [data-testid="stAppDeployButton"] { display: none !important; }
     [data-testid="stStatusWidget"] { display: none !important; }
     [data-testid="stDecoration"] { display: none !important; }
-    /* "Hosted with Streamlit" badge in the bottom-right (class hash
-       varies across Streamlit versions, so match by any container that
-       lives directly under viewerBadge). */
-    a[href*="streamlit.io/cloud"], a[href*="viewerBadge"] { display: none !important; }
-    ._container_gzau3_1, ._link_gzau3_10, ._viewerBadge_link__qRIco { display: none !important; }
+
+    /* ---- (2a) Cloud toolbar with Fork / GitHub / ⋮ (top-right) ---- */
+    [data-testid="stToolbar"],
+    [data-testid="stAppToolbar"],
+    [data-testid="stToolbarActions"],
+    [data-testid="stToolbarActionButton"],
+    [data-testid="stBaseButton-header"],
+    .stAppToolbar,
+    .stToolbar,
+    .stMainMenu { display: none !important; }
+
+    /* ---- (2b) Creator profile preview badge (bottom corner) ----
+       Streamlit's CSS modules produce classes like
+       "_profilePreview_gzau3_63" / "_profileImage_gzau3_78" /
+       "_container_gzau3_53", where the "gzau3_XX" hash suffix
+       changes on every deploy. Attribute-contains selectors match
+       any hash. */
+    [class*="_profilePreview_"] { display: none !important; }
+    [class*="_profileImage_"] { display: none !important; }
+    [class*="_profileContainer_"] { display: none !important; }
+    [class*="_profileBadge_"] { display: none !important; }
+    /* Legacy "Hosted with Streamlit" viewer badge, kept for older versions */
+    [class*="viewerBadge"] { display: none !important; }
+    a[href*="streamlit.io"] { display: none !important; }
+    a[href*="share.streamlit.io"] { display: none !important; }
 
     /* ==== Dark navy sidebar (mimics the reference dashboard) ==== */
     [data-testid="stSidebar"] {
