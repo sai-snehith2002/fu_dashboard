@@ -1,0 +1,10 @@
+# Local Metabase credentials -- never commit this. GitHub Actions supplies
+# MB_API_KEY as a repo secret instead (see .github/workflows/refresh_data.yml).
+config.toml
+
+# Python
+__pycache__/
+*.pyc
+
+# Streamlit
+.streamlit/secrets.toml

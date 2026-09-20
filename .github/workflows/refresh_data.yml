@@ -1,0 +1,72 @@
+name: Refresh FollowUp dashboard data
+
+# Runs every 2 hours, on the even hour (UTC) -- GitHub schedules this to
+# roughly :00 of every second hour but can run a few minutes late under
+# load; that's fine for a 2-hourly refresh. workflow_dispatch lets you
+# trigger a run manually from the Actions tab to test it without waiting
+# for the schedule.
+on:
+  schedule:
+    - cron: "0 */2 * * *"
+  workflow_dispatch: {}
+
+# Prevents two runs from overlapping if one is ever slow to finish (the
+# Metabase query itself typically takes 2-3 minutes).
+concurrency:
+  group: refresh-data
+  cancel-in-progress: false
+
+# Needed so the final step can push the refreshed CSV back to this repo
+# with the workflow's own auto-generated GITHUB_TOKEN.
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    # The Metabase query takes 2-3 min, plus setup/checkout overhead --
+    # 15 minutes gives comfortable headroom without hanging forever if
+    # the API is stuck.
+    timeout-minutes: 15
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --quiet requests pandas
+
+      # end_date rolls to "today" (Asia/Kolkata) on every run; cohort_from
+      # and start_date stay fixed -- edit the two --*-date flags below if
+      # those anchor dates ever need to change.
+      - name: Compute today's date (IST)
+        run: echo "END_DATE=$(TZ=Asia/Kolkata date +%F)" >> "$GITHUB_ENV"
+
+      - name: Pull latest data from Metabase
+        env:
+          MB_API_KEY: ${{ secrets.MB_API_KEY }}
+        run: |
+          python data_pull.py \
+            --cohort-from "2026-07-31" \
+            --start-date "2026-08-01" \
+            --end-date "$END_DATE" \
+            --output followup_dashboard.csv
+
+      - name: Commit and push if the data changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add followup_dashboard.csv
+          if [ -f followup_dashboard_column_labels.json ]; then
+            git add followup_dashboard_column_labels.json
+          fi
+          if git diff --cached --quiet; then
+            echo "No data changes -- nothing to commit."
+          else
+            git commit -m "Auto-refresh dashboard data ($END_DATE IST)"
+            git push
+          fi
