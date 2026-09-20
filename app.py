@@ -407,20 +407,37 @@ st.markdown(
     .stToolbar,
     .stMainMenu { display: none !important; }
 
-    /* ---- (2b) Creator profile preview badge (bottom corner) ----
-       Streamlit's CSS modules produce classes like
-       "_profilePreview_gzau3_63" / "_profileImage_gzau3_78" /
-       "_container_gzau3_53", where the "gzau3_XX" hash suffix
-       changes on every deploy. Attribute-contains selectors match
-       any hash. */
-    [class*="_profilePreview_"] { display: none !important; }
-    [class*="_profileImage_"] { display: none !important; }
-    [class*="_profileContainer_"] { display: none !important; }
-    [class*="_profileBadge_"] { display: none !important; }
-    /* Legacy "Hosted with Streamlit" viewer badge, kept for older versions */
-    [class*="viewerBadge"] { display: none !important; }
-    a[href*="streamlit.io"] { display: none !important; }
+    /* ---- (2b) "Hosted with Streamlit" badge + creator profile ----
+       Streamlit's CSS modules build classes like
+       "_container_gzau3_1  _viewerBadge_1j65n_23" on the badge <a>
+       and "_profileContainer_gzau3_53" on the creator's profile <div>.
+       The trailing "_NN" suffix is a hash that changes on every deploy,
+       so we use attribute-contains selectors that don't depend on it.
+       Every well-known variant covered so far is listed below. */
+
+    /* The badge anchor itself -- three independent ways to hit it */
+    a[href="https://streamlit.io/cloud"],
+    a[href*="streamlit.io/cloud"],
+    a[href*="streamlit.io"],
     a[href*="share.streamlit.io"] { display: none !important; }
+
+    /* The badge by its CSS-module class fragments */
+    [class*="viewerBadge"],
+    [class*="_viewerBadge"],
+    [class*="_container_gzau3"],
+    [class*="_link_gzau3"] { display: none !important; }
+
+    /* The creator profile block */
+    [class*="_profileContainer_"],
+    [class*="_profilePreview_"],
+    [class*="_profileImage_"],
+    [class*="_profileBadge_"],
+    [class*="_profileLink_"] { display: none !important; }
+
+    /* Nuclear last-resort: any fixed-position anchor pointing anywhere
+       under streamlit.io (covers a rename of the badge class in a
+       future release). */
+    body a[href*="streamlit"] { display: none !important; }
 
     /* ==== Dark navy sidebar (mimics the reference dashboard) ==== */
     [data-testid="stSidebar"] {
