@@ -1,10 +1,12 @@
 # Local Metabase credentials -- never commit this. GitHub Actions supplies
 # MB_API_KEY as a repo secret instead (see .github/workflows/refresh_data.yml).
-config.toml
+# The leading slash anchors this to the repo root only, so .streamlit/config.toml
+# (which is public app config, not a secret) is NOT ignored.
+/config.toml
 
 # Python
 __pycache__/
 *.pyc
 
-# Streamlit
+# Streamlit local secrets (public app config .streamlit/config.toml IS committed)
 .streamlit/secrets.toml

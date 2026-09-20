@@ -1,0 +1,17 @@
+# Streamlit runtime config, committed to the repo (unlike
+# .streamlit/secrets.toml which stays gitignored).
+
+[client]
+# "minimal" hides the top-right hamburger menu (with its Fork /
+# Deploy / Report-a-bug / About options) and other Streamlit-facing
+# dev controls, so public viewers see just the dashboard.
+# Options: "auto" (default), "developer", "viewer", "minimal".
+toolbarMode = "minimal"
+
+# Don't leak Python tracebacks to public viewers on unhandled errors.
+showErrorDetails = false
+
+[browser]
+# Streamlit's own anonymous usage stats. Turning it off has no effect
+# on hosting; it just stops the app from phoning home per-session.
+gatherUsageStats = false
