@@ -1,27 +1,3 @@
-"""
-app.py
-======
-FollowUp Dashboard — Streamlit build.
-
-Run with:
-    streamlit run app.py
-
-Reads the CSV produced by data_pull.py (default: followup_dashboard.csv in
-this same folder), re-applies the same normalisation data_pull.py used
-(so dtypes survive the CSV round-trip), lets the person pick a city/cluster
-from a button-row list in the sidebar (or "Pan-India" for every cluster
-combined -- no Python-level hardcoding of which city is shown), and
-renders:
-  - Card 1 (City snapshot): Meetings done / Closed on spot /
-    Eligible for follow-ups / No audio notes
-  - Due Today section: completion %, pending + top-pending TL, the
-    Agreed+Another / P1+P2 / Others split, and a click-driven
-    TL -> SC -> Lead drill-down (click a table row to go one level deeper;
-    click the section header to open/close the drill-down itself).
-
-All the actual math lives in metrics.py, kept free of Streamlit calls so it
-stays testable on its own.
-"""
 from __future__ import annotations
 
 import os
@@ -115,9 +91,17 @@ def render_drill_table(
 
     Returns None if nothing was just selected.
     """
-    data = df_display
-    if row_style_fn is not None:
-        data = df_display.style.apply(row_style_fn, axis=1)
+    # If a raw DataFrame is passed, auto-center numeric columns via
+    # apply_table_style so single-shot drill tables get the same
+    # alignment treatment as accordion ones. If a Styler is already
+    # passed, use it as-is (caller has full control).
+    if isinstance(df_display, pd.DataFrame):
+        if row_style_fn is not None:
+            data = df_display.style.apply(row_style_fn, axis=1)
+        else:
+            data = apply_table_style(df_display)
+    else:
+        data = df_display
     event = st.dataframe(
         data,
         width="stretch",
@@ -162,7 +146,10 @@ def render_accordion_drill(
     sub_label: str,
     state_key: str,
     column_config=None,
-    row_style_fn=None,
+    styler_fn=None,
+    extra_center_cols=(),
+    color_index_col: str | None = None,
+    lead_extra_center_cols=(),
 ):
     """
     A single, growing "accordion" table in place of a TL -> SC -> Lead
@@ -176,9 +163,17 @@ def render_accordion_drill(
     columns (just grouped by tl_id_col vs sc_id_col) -- display_cols maps
     those raw metric column names to the display labels shown in the table.
 
-    row_style_fn: optional row_style_fn(row) -> list[str] (e.g. an existing
-    metric-based row Styler) used instead of the default TL/SC tier tint --
-    for a table that already has its own semantic row coloring.
+    styler_fn: optional (display_df, tier_levels) -> Styler used to
+      style the assembled accordion table. Defaults to
+      apply_table_style(...) which center-aligns numeric columns, tints
+      TL vs SC rows, and optionally font-colors the color_index_col.
+
+    extra_center_cols / color_index_col: forwarded to apply_table_style
+      to center string-formatted-numeric columns (e.g. "88.5%" text)
+      and to color-tint the Index column font.
+
+    lead_extra_center_cols: same, but applied to the separate lead-level
+      table shown once an SC is expanded.
 
     Session state keys used: st.session_state[f"{state_key}_tl"] and
     st.session_state[f"{state_key}_sc"].
@@ -222,8 +217,15 @@ def render_accordion_drill(
                 raw_names.append(sc_name)
 
     display_df = pd.DataFrame(rows, columns=display_labels)
-    style_fn = row_style_fn if row_style_fn is not None else _default_tier_row_style(levels)
-    styled = display_df.style.apply(style_fn, axis=1)
+    if styler_fn is not None:
+        styled = styler_fn(display_df, levels)
+    else:
+        styled = apply_table_style(
+            display_df,
+            extra_center_cols=extra_center_cols,
+            color_index_col=color_index_col,
+            tier_levels=levels,
+        )
 
     st.caption(f"Click a {group_label} to reveal its {sub_label}s; click an {sub_label} to reveal its leads.")
     table_key = f"{state_key}_accordion_table"
@@ -247,28 +249,65 @@ def render_accordion_drill(
     if expanded_tl and expanded_sc:
         lead_df = lead_lookup(expanded_tl, expanded_sc)
         st.caption(f"Leads under **{expanded_tl} → {expanded_sc}**")
-        st.dataframe(lead_df, width="stretch", hide_index=True)
+        st.dataframe(
+            apply_table_style(lead_df, extra_center_cols=lead_extra_center_cols),
+            width="stretch", hide_index=True,
+        )
 
 
-def audio_index_row_style(row: pd.Series) -> list[str]:
+def audio_index_font_color(v) -> str:
     """
-    Whole-row background color for the Audio Index TL/SC tables, keyed off
-    the "Index" column: above 8 -> green, 7-8 (inclusive) -> amber, below 7
-    -> red. Used as render_drill_table's row_style_fn for those two tables.
+    Font-color-only styling for a single Index cell: above 8 -> green,
+    7-8 (inclusive) -> amber, below 7 -> red. Used via Styler.map with
+    subset=['Index'] so ONLY the Index number is tinted -- the rest of
+    the row stays uncolored for a cleaner, more professional table.
     """
     try:
-        idx = float(row.get("Index"))
+        x = float(v)
     except (TypeError, ValueError):
-        return [""] * len(row)
-    if pd.isna(idx):
-        return [""] * len(row)
-    if idx > 8:
-        color = "rgba(46, 139, 87, 0.25)"  # green
-    elif idx >= 7:
-        color = "rgba(255, 191, 0, 0.25)"  # amber
-    else:
-        color = "rgba(220, 20, 60, 0.25)"  # red
-    return [f"background-color: {color}"] * len(row)
+        return ""
+    if pd.isna(x):
+        return ""
+    if x > 8:
+        return "color: #1E7E34; font-weight: 700"
+    if x >= 7:
+        return "color: #B7791F; font-weight: 700"
+    return "color: #C0392B; font-weight: 700"
+
+
+def apply_table_style(df: pd.DataFrame, extra_center_cols=(), color_index_col: str | None = None,
+                      tier_levels=None):
+    """
+    Return a pandas Styler for `df` with:
+      - all numeric-dtype columns center-aligned (Streamlit's default is
+        right-aligned for numerics and left-aligned for strings, so
+        setting text-align:center via Styler is the only way to change
+        it in the canvas-based grid)
+      - any additional string-formatted-numeric columns in
+        `extra_center_cols` also center-aligned (e.g. "88.5%" strings)
+      - if color_index_col is set, its cell values get the
+        audio_index_font_color treatment (green/amber/red font)
+      - if tier_levels is a list of "TL" / "SC" markers matching the
+        row order (accordion drill), rows get the light TL/SC tier tint
+
+    Everything else stays default. Compatible with Streamlit's
+    st.dataframe when passed as the first positional argument.
+    """
+    from pandas.api.types import is_numeric_dtype
+    numeric_cols = [c for c in df.columns if is_numeric_dtype(df[c])]
+    center_cols = list(dict.fromkeys(list(numeric_cols) + list(extra_center_cols)))
+
+    styler = df.style
+    if center_cols:
+        # Filter to columns that actually exist (defensive)
+        center_cols = [c for c in center_cols if c in df.columns]
+        if center_cols:
+            styler = styler.set_properties(subset=center_cols, **{"text-align": "center"})
+    if color_index_col and color_index_col in df.columns:
+        styler = styler.map(audio_index_font_color, subset=[color_index_col])
+    if tier_levels is not None:
+        styler = styler.apply(_default_tier_row_style(tier_levels), axis=1)
+    return styler
 
 
 def _fmt_count_pct(n: int, pct: int, dash_if_zero: bool = True) -> str:
@@ -342,14 +381,22 @@ def build_funnel_quality_overall_display(overall: pd.DataFrame) -> pd.DataFrame:
 
 
 def style_funnel_quality_state(display: pd.DataFrame):
-    """Colors the State column red for Breaching, green for Within."""
+    """
+    Colors the State column red for Breaching, green for Within, and
+    center-aligns the numeric-looking columns (Now, Threshold) for the
+    Funnel Quality Overall table.
+    """
     def _color(v: str) -> str:
         if v == "Breaching":
             return "color: #d63031; font-weight: 600"
         if v == "Within":
             return "color: #2e8b57; font-weight: 600"
         return ""
-    return display.style.map(_color, subset=["State"])
+    styler = display.style.map(_color, subset=["State"])
+    center_cols = [c for c in ("Now", "Threshold") if c in display.columns]
+    if center_cols:
+        styler = styler.set_properties(subset=center_cols, **{"text-align": "center"})
+    return styler
 
 
 def build_funnel_quality_sc_display(sc_df: pd.DataFrame, category_label: str) -> pd.DataFrame:
@@ -431,35 +478,31 @@ st.markdown(
     .stToolbar,
     .stMainMenu { display: none !important; }
 
-    /* ---- (2b) "Hosted with Streamlit" badge + creator profile ----
-       Hardened for specificity: prefixed with `html body`, class
-       selectors duplicated ([class*="x"][class*="x"]) to bump
-       specificity above anything Streamlit's own stylesheet can rank,
-       and every hiding property Streamlit could target is set. */
+    /* ---- (2b) NOTE on the "Hosted with Streamlit" badge + creator
+       profile picture (bottom-right corner on Streamlit Cloud) ----
 
-    html body a[href*="streamlit.io"],
-    html body a[href*="share.streamlit.io"],
-    html body a[class*="viewerBadge"][class*="viewerBadge"],
-    html body a[class*="_viewerBadge"][class*="_viewerBadge"],
-    html body a[class*="_container_gzau3"][class*="_container_gzau3"],
-    html body div[class*="_link_gzau3"][class*="_link_gzau3"],
-    html body div[class*="_profileContainer_"][class*="_profileContainer_"],
-    html body div[class*="_profilePreview_"][class*="_profilePreview_"],
-    html body img[class*="_profileImage_"][class*="_profileImage_"],
-    html body [data-testid="appCreatorAvatar"] {
-        display: none !important;
-        visibility: hidden !important;
-        opacity: 0 !important;
-        height: 0 !important;
-        width: 0 !important;
-        max-height: 0 !important;
-        max-width: 0 !important;
-        overflow: hidden !important;
-        position: fixed !important;
-        left: -9999px !important;
-        top: -9999px !important;
-        pointer-events: none !important;
-    }
+       These CANNOT be hidden from here, and no CSS rule in this file
+       will ever reach them. On Streamlit Community Cloud the deployed
+       page is a wrapper document that contains:
+
+           <div class="_stateContainer_...">
+             <iframe title="streamlitApp" src="...">  <-- THIS app + this CSS
+             <a href="https://streamlit.io/cloud">    <-- badge, OUTSIDE the iframe
+             <div class="_profileContainer_...">      <-- creator avatar, OUTSIDE
+           </div>
+
+       Everything this file renders lives inside that iframe, and a
+       document inside an iframe cannot style its parent document --
+       a browser security boundary, not a specificity problem.
+       Streamlit Cloud places the badge outside the iframe on purpose
+       so free-tier apps keep the attribution.
+
+       To serve the dashboard without that chrome, append ?embed=true
+       to the app URL (Streamlit's own documented embed mode), which
+       renders the app without the wrapper page:
+           https://<your-app>.streamlit.app/?embed=true
+       The selectors kept below still do useful work, because the
+       toolbar/menu/footer they target ARE inside the iframe. */
 
     /* ==== Dark navy sidebar (mimics the reference dashboard) ==== */
     [data-testid="stSidebar"] {
@@ -702,6 +745,72 @@ st.markdown(
     [data-testid="stSegmentedControl"] label {
         font-weight: 500;
     }
+
+    /* ==== Audio Index hero (main section: prominent Index, small Coverage/Completeness) ==== */
+    .ai-hero {
+        padding: 0.25rem 0 0.5rem 0;
+    }
+    .ai-hero-header {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        margin-bottom: 0.35rem;
+    }
+    .ai-hero-label {
+        color: #64748B;
+        font-size: 0.85rem;
+        font-weight: 500;
+    }
+    .ai-hero-help,
+    .ai-hero-help-sm {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #E2E8F0;
+        color: #64748B;
+        font-size: 0.7rem;
+        line-height: 1;
+        cursor: help;
+        font-weight: 600;
+        user-select: none;
+    }
+    .ai-hero-value {
+        color: #0F172A;
+        font-size: 3.1rem;
+        font-weight: 700;
+        line-height: 1;
+        margin-bottom: 1rem;
+        letter-spacing: -0.02em;
+    }
+    .ai-hero-unit {
+        color: #94A3B8;
+        font-size: 1.3rem;
+        font-weight: 500;
+        margin-left: 0.2rem;
+    }
+    .ai-hero-secondaries {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2.75rem;
+    }
+    .ai-hero-sec-label {
+        color: #64748B;
+        font-size: 0.78rem;
+        font-weight: 500;
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+        margin-bottom: 0.2rem;
+    }
+    .ai-hero-sec-value {
+        color: #0F172A;
+        font-size: 1.35rem;
+        font-weight: 600;
+        line-height: 1;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -859,7 +968,7 @@ with st.container(border=True):
                 "eligible_for_followups": "Eligible for follow-ups",
                 "no_audio_notes": "No audio notes",
             })
-            st.dataframe(c1_city_display, width="stretch", hide_index=True)
+            st.dataframe(apply_table_style(c1_city_display), width="stretch", hide_index=True)
 
 st.divider()
 
@@ -876,21 +985,37 @@ with st.container(border=True):
     if ai["total_denominator"] == 0:
         st.info("No non-on-spot meetings for this cluster to compute the Audio Index against.")
     else:
-        ai_c1, ai_c2, ai_c3 = st.columns(3)
-        ai_c1.metric(
-            "Coverage %",
-            fmt_pct(ai["coverage_pct"]),
-            help="Represents the percentage of leads whose Audio is Present",
-        )
-        ai_c2.metric(
-            "Completeness %",
-            fmt_pct(ai["completeness_pct"]),
-            help=f"Share of all {M.TOTAL_DISPOSITIONS} disposition slots, across leads whose Audio is present",
-        )
-        ai_c3.metric(
-            "Audio Index",
-            f"{ai['audio_index']:.1f}/10",
-            help="(Coverage % × Completeness %) / 1000, rounded to 1 decimal.",
+        # Hero layout: Audio Index is the headline (big, left), with
+        # Coverage % and Completeness % as smaller supporting figures
+        # underneath. Native browser tooltips (title="...") on the small
+        # info glyphs -- ordinary HTML, no JS.
+        st.markdown(
+            f'''
+            <div class="ai-hero">
+              <div class="ai-hero-header">
+                <span class="ai-hero-label">Audio Index</span>
+                <span class="ai-hero-help" title="Audio Index is the Score of Coverage and Completeness percentages.">?</span>
+              </div>
+              <div class="ai-hero-value">{ai["audio_index"]:.1f}<span class="ai-hero-unit">/10</span></div>
+              <div class="ai-hero-secondaries">
+                <div>
+                  <div class="ai-hero-sec-label">
+                    Coverage %
+                    <span class="ai-hero-help-sm" title="Represents the percentage of leads whose Audio is Present">?</span>
+                  </div>
+                  <div class="ai-hero-sec-value">{fmt_pct(ai["coverage_pct"])}</div>
+                </div>
+                <div>
+                  <div class="ai-hero-sec-label">
+                    Completeness %
+                    <span class="ai-hero-help-sm" title="Share of all {M.TOTAL_DISPOSITIONS} disposition slots, across leads whose Audio is present">?</span>
+                  </div>
+                  <div class="ai-hero-sec-value">{fmt_pct(ai["completeness_pct"])}</div>
+                </div>
+              </div>
+            </div>
+            ''',
+            unsafe_allow_html=True,
         )
 
         if IS_PAN_INDIA:
@@ -903,7 +1028,13 @@ with st.container(border=True):
                 ai_city_display = ai_city_display.rename(columns={
                     "coverage_pct": "Coverage %", "completeness_pct": "Completeness %", "audio_index": "Audio Index",
                 })
-                st.dataframe(ai_city_display, width="stretch", hide_index=True)
+                st.dataframe(
+                    apply_table_style(
+                        ai_city_display,
+                        extra_center_cols=["Coverage %", "Completeness %", "Audio Index"],
+                    ),
+                    width="stretch", hide_index=True,
+                )
 
         st.subheader("Audio Index — drill down")
         meetings_today_only = st.toggle("From Meeting's Today", key="audio_meetings_today")
@@ -931,7 +1062,6 @@ with st.container(border=True):
 
                 if IS_PAN_INDIA:
                     # ---- Pan-India: flat City view, no further drill ----
-                    st.caption("Index = (Coverage % × Completeness %) / 1000.")
                     city_audio = M.audio_split_breakdown(meeting_done_pool, audio_base, "cluster")
                     city_audio_display = city_audio.copy()
                     city_audio_display["pct_with_missing"] = city_audio_display["pct_with_missing"].map(
@@ -939,7 +1069,11 @@ with st.container(border=True):
                     )
                     city_audio_display = city_audio_display.rename(columns={"cluster": "City", **audio_display_cols})
                     st.dataframe(
-                        city_audio_display.style.apply(audio_index_row_style, axis=1),
+                        apply_table_style(
+                            city_audio_display,
+                            extra_center_cols=["% leads with a disposition missing"],
+                            color_index_col="Index",
+                        ),
                         width="stretch", hide_index=True,
                     )
                 else:
@@ -948,7 +1082,6 @@ with st.container(border=True):
                         d["pct_with_missing"] = d["pct_with_missing"].map(lambda x: f"{x:.1f}%")
                         return d
 
-                    st.caption("Index = (Coverage % × Completeness %) / 1000.")
                     st.markdown("**TL → SC → Lead**")
                     render_accordion_drill(
                         tl_df=_audio_fmt(M.tl_audio_breakdown(meeting_done_pool, audio_base)),
@@ -962,14 +1095,18 @@ with st.container(border=True):
                         group_label="TL",
                         sub_label="SC",
                         state_key="audio_index",
-                        row_style_fn=audio_index_row_style,
+                        extra_center_cols=["% leads with a disposition missing"],
+                        color_index_col="Index",
                     )
 
             with tab_disp:
                 disp = M.disposition_breakdown(audio_base)
                 disp_display = disp.copy()
                 disp_display["Share"] = disp_display["Share"].map(lambda x: f"{x:.1f}%")
-                st.dataframe(disp_display, width="stretch", hide_index=True)
+                st.dataframe(
+                    apply_table_style(disp_display, extra_center_cols=["Share"]),
+                    width="stretch", hide_index=True,
+                )
 
 st.divider()
 
@@ -1045,7 +1182,8 @@ with st.container(border=True):
                 cityb = M.breakdown_by(came_due, "cluster")
                 cityb_display = cityb.rename(columns={"cluster": "City", **display_cols})
                 st.dataframe(
-                    cityb_display, width="stretch", hide_index=True, column_config=due_today_column_config,
+                    apply_table_style(cityb_display),
+                    width="stretch", hide_index=True, column_config=due_today_column_config,
                 )
         else:
             st.markdown("**TL → SC → Lead**")
@@ -1130,7 +1268,8 @@ with st.container(border=True):
                 city_ov = M.overdue_breakdown_by(city_df, "cluster")
                 city_ov_display = city_ov.rename(columns={"cluster": "City", **ov_display_cols})
                 st.dataframe(
-                    city_ov_display, width="stretch", hide_index=True, column_config=overdue_column_config,
+                    apply_table_style(city_ov_display),
+                    width="stretch", hide_index=True, column_config=overdue_column_config,
                 )
         else:
             st.markdown("**TL → SC → Lead**")
@@ -1175,7 +1314,14 @@ with st.container(border=True):
             st.info("No leads in the funnel quality pool for this cluster.")
         else:
             fqtlw_display = build_funnel_quality_tlwise_display(fqtlw)
-            st.dataframe(fqtlw_display, width="stretch", hide_index=True)
+            st.dataframe(
+                apply_table_style(
+                    fqtlw_display,
+                    extra_center_cols=["With an outcome", "Did not pick up",
+                                        "+ Lost + Nurture", "Dated beyond 5 days"],
+                ),
+                width="stretch", hide_index=True,
+            )
     else:
         fq_overall = M.funnel_quality_overall(city_df)
         fq_overall_display = build_funnel_quality_overall_display(fq_overall)
@@ -1190,7 +1336,13 @@ with st.container(border=True):
                     st.caption("No leads in this category.")
                 else:
                     fq_sc_display = build_funnel_quality_sc_display(fq_sc, cat_row["measure"])
-                    st.dataframe(fq_sc_display, width="stretch", hide_index=True)
+                    # SC-breakdown columns are (SC, Leads, <measure>) where Leads/<measure>
+                    # are pre-formatted string counts. Center-align those two.
+                    sc_extra_center = [c for c in fq_sc_display.columns if c != "SC"]
+                    st.dataframe(
+                        apply_table_style(fq_sc_display, extra_center_cols=sc_extra_center),
+                        width="stretch", hide_index=True,
+                    )
 
 st.divider()
 
@@ -1218,7 +1370,10 @@ with st.container(border=True):
             st.info("No leads in the follow-up funnel pool for this cluster.")
         else:
             cw_display = build_funnel_group_wise_display(cw, "cluster", "City")
-            st.dataframe(cw_display, width="stretch", hide_index=True)
+            st.dataframe(
+                cw_display.style.set_properties(**{"text-align": "center"}),
+                width="stretch", hide_index=True,
+            )
     elif funnel_cut == GROUP_CUT_LABEL:
         if "funnel_tlwise_drill_tl" not in st.session_state:
             st.session_state.funnel_tlwise_drill_tl = None
@@ -1242,7 +1397,10 @@ with st.container(border=True):
             else:
                 st.caption("Click a row to drill into that TL's SCs.")
                 tlw_display = build_funnel_group_wise_display(tlw, "tl", "TL")
-                picked = render_drill_table(tlw_display, tlw["tl"], "funnel_tlwise_tl_table")
+                picked = render_drill_table(
+                    tlw_display.style.set_properties(**{"text-align": "center"}),
+                    tlw["tl"], "funnel_tlwise_tl_table",
+                )
                 if picked is not None:
                     st.session_state.funnel_tlwise_drill_tl = picked
                     st.rerun()
@@ -1253,7 +1411,10 @@ with st.container(border=True):
                 st.info("No leads in the follow-up funnel pool for this TL.")
             else:
                 scw_display = build_funnel_group_wise_display(scw, "sc", "SC")
-                st.dataframe(scw_display, width="stretch", hide_index=True)
+                st.dataframe(
+                    scw_display.style.set_properties(**{"text-align": "center"}),
+                    width="stretch", hide_index=True,
+                )
     else:
         funnel_boxes = M.funnel_box_counts(city_df)
 
@@ -1277,7 +1438,7 @@ with st.container(border=True):
                     if raw_status == "another_follow_up_required":
                         # ---- Another Follow up needed: 1st cut (When/Leads/Share) ----
                         when_tbl = M.another_fu_when_table(box_pool, str(as_of))
-                        st.dataframe(when_tbl, width="stretch", hide_index=True)
+                        st.dataframe(apply_table_style(when_tbl), width="stretch", hide_index=True)
 
                         affu_display_cols = {
                             "leads": "Leads", "overdue": "Overdue", "due_today": "Due today",
@@ -1289,7 +1450,10 @@ with st.container(border=True):
                             st.markdown("**City breakdown**")
                             city_affu = M.another_fu_breakdown_by(box_pool, str(as_of), "cluster")
                             city_affu_display = city_affu.rename(columns={"cluster": "City", **affu_display_cols})
-                            st.dataframe(city_affu_display, width="stretch", hide_index=True)
+                            st.dataframe(
+                                apply_table_style(city_affu_display),
+                                width="stretch", hide_index=True,
+                            )
                         else:
                             st.markdown("**TL → SC → Lead**")
                             render_accordion_drill(
@@ -1309,7 +1473,7 @@ with st.container(border=True):
                     elif raw_status == "dnp":
                         # ---- DNP: 1st cut (Consecutive DNPs/Leads/Share) ----
                         ct = M.dnp_consecutive_table(box_pool)
-                        st.dataframe(ct, width="stretch", hide_index=True)
+                        st.dataframe(apply_table_style(ct), width="stretch", hide_index=True)
 
                         dnp_display_cols = {
                             "dnp_leads": "DNP leads", "three_plus": "3+ in a row", "avg_dnps": "Avg DNPs",
@@ -1320,7 +1484,10 @@ with st.container(border=True):
                             st.markdown("**City breakdown**")
                             city_dnp = M.dnp_breakdown_by(box_pool, "cluster")
                             city_dnp_display = city_dnp.rename(columns={"cluster": "City", **dnp_display_cols})
-                            st.dataframe(city_dnp_display, width="stretch", hide_index=True)
+                            st.dataframe(
+                                apply_table_style(city_dnp_display),
+                                width="stretch", hide_index=True,
+                            )
                         else:
                             st.markdown("**TL → SC → Lead**")
                             render_accordion_drill(
@@ -1353,6 +1520,9 @@ with st.container(border=True):
                             "avg_fus": "Avg FUs", "avg_days_to_last_fu": "Avg days to last FU", "p1p2": "P1+P2",
                         })
                         gb_display["Share"] = gb_display["Share"].map(lambda x: f"{x:.1f}%")
-                        st.dataframe(gb_display, width="stretch", hide_index=True)
+                        st.dataframe(
+                            apply_table_style(gb_display, extra_center_cols=["Share"]),
+                            width="stretch", hide_index=True,
+                        )
 
 st.divider()

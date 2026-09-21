@@ -1,13 +1,3 @@
-"""
-metrics.py
-==========
-Pure data-crunching functions for the FollowUp Streamlit dashboard.
-
-Deliberately has no Streamlit import: every function here takes a
-DataFrame and returns a DataFrame/dict, so it can be unit-tested with
-plain pandas and reused if the UI layer changes later. app.py is the
-only place that touches st.*.
-"""
 from __future__ import annotations
 
 import pandas as pd
@@ -669,7 +659,7 @@ def audio_breakdown_by(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
         avg_missing=("_missing", "mean"),
     ).reset_index()
     out["pct_with_missing"] = (out["pct_with_missing"] * 100).round(1)
-    out["avg_missing"] = out["avg_missing"].round(2)
+    out["avg_missing"] = out["avg_missing"].round(1)
     return out
 
 
@@ -1054,7 +1044,7 @@ def dnp_breakdown_by(pool: pd.DataFrame, group_col: str,
         three_plus=("_dnp", lambda s: int((s > 3).sum())),
         avg_dnps=("_dnp", "mean"),
     ).reset_index()
-    out["avg_dnps"] = out["avg_dnps"].round(2)
+    out["avg_dnps"] = out["avg_dnps"].round(1)
     out = out.sort_values("dnp_leads", ascending=False).reset_index(drop=True)
     return out
 
@@ -1125,7 +1115,7 @@ def funnel_generic_breakdown(pool: pd.DataFrame, as_of: str, group_col: str = "t
     ).reset_index()
 
     out["share"] = (out["leads"] / total * 100).round(1) if total else 0.0
-    out["avg_fus"] = out["avg_fus"].round(2)
+    out["avg_fus"] = out["avg_fus"].round(1)
     out["avg_days_to_last_fu"] = out["avg_days_to_last_fu"].round(1)
     out["p1p2"] = out["p1p2"].astype(int)
 
