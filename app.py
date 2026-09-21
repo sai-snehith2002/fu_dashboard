@@ -94,6 +94,7 @@ def render_drill_table(
     table_key: str,
     column_config=None,
     row_style_fn=None,
+    center_all_columns: bool = False,
 ):
     """
     Renders `df_display` as a single-row-selectable table. If the person has
@@ -103,9 +104,10 @@ def render_drill_table(
     it is rendered (otherwise a stale selection would immediately re-fire the
     same drill the moment someone navigates back to this view).
 
-    column_config: optional dict passed straight through to st.dataframe's
-    own column_config (e.g. st.column_config.NumberColumn(help=...)), used
-    to add hover tooltips to specific columns.
+    column_config: optional dict merged on top of the auto-generated
+    centering config (e.g. st.column_config.Column(help=..., alignment=
+    "center")), used to add hover tooltips to specific columns. The
+    caller's own entries win for any column named in both.
 
     row_style_fn: optional function(row) -> list[str] of per-row CSS,
     applied via a pandas Styler (df_display.style.apply(row_style_fn,
@@ -113,19 +115,38 @@ def render_drill_table(
     on_select/selection_mode="single-row" has been verified to work without
     exceptions in this Streamlit version.
 
+    center_all_columns: when True, every column (not just numeric ones)
+    gets centered -- for tables where every cell is already a
+    pre-formatted string, e.g. the "N (X%)" Follow-up funnel tables
+    (which may also arrive here as an already-built Styler, not a raw
+    DataFrame -- see the `.data` lookup below).
+
     Returns None if nothing was just selected.
     """
-    # If a raw DataFrame is passed, auto-center numeric columns via
-    # apply_table_style so single-shot drill tables get the same
-    # alignment treatment as accordion ones. If a Styler is already
-    # passed, use it as-is (caller has full control).
+    # If a raw DataFrame is passed, run it through apply_table_style so
+    # single-shot drill tables get the same 1-decimal-rounding + centering
+    # treatment as accordion ones -- unless every cell is already a
+    # pre-formatted string and every column should be centered regardless
+    # of dtype (center_all_columns), in which case skip the Styler
+    # machinery entirely and just center every column directly. If a
+    # Styler is already passed, use it as-is (caller has full control) but
+    # still derive a centering config from its underlying data when asked.
     if isinstance(df_display, pd.DataFrame):
-        if row_style_fn is not None:
-            data = df_display.style.apply(row_style_fn, axis=1)
+        if center_all_columns:
+            data = df_display
+            auto_config = center_columns_config(df_display, df_display.columns)
         else:
-            data = apply_table_style(df_display)
+            data, auto_config = apply_table_style(df_display)
+        if row_style_fn is not None:
+            data = (data if not isinstance(data, pd.DataFrame) else data.style).apply(row_style_fn, axis=1)
     else:
         data = df_display
+        underlying = getattr(df_display, "data", None)
+        auto_config = (
+            center_columns_config(underlying, underlying.columns)
+            if center_all_columns and underlying is not None else {}
+        )
+    merged_config = {**auto_config, **(column_config or {})}
     event = st.dataframe(
         data,
         width="stretch",
@@ -133,7 +154,7 @@ def render_drill_table(
         on_select="rerun",
         selection_mode="single-row",
         key=table_key,
-        column_config=column_config,
+        column_config=merged_config or None,
     )
     rows = event.selection.rows if event is not None and event.selection else []
     if rows:
@@ -243,8 +264,11 @@ def render_accordion_drill(
     display_df = pd.DataFrame(rows, columns=display_labels)
     if styler_fn is not None:
         styled = styler_fn(display_df, levels)
+        auto_config = center_columns_config(
+            display_df, [c for c in display_df.columns if c != id_col_label]
+        )
     else:
-        styled = apply_table_style(
+        styled, auto_config = apply_table_style(
             display_df,
             extra_center_cols=extra_center_cols,
             color_index_col=color_index_col,
@@ -253,9 +277,10 @@ def render_accordion_drill(
 
     st.caption(f"Click a {group_label} to reveal its {sub_label}s; click an {sub_label} to reveal its leads.")
     table_key = f"{state_key}_accordion_table"
+    merged_config = {**auto_config, **(column_config or {})}
     event = st.dataframe(
         styled, width="stretch", hide_index=True, on_select="rerun",
-        selection_mode="single-row", key=table_key, column_config=column_config,
+        selection_mode="single-row", key=table_key, column_config=merged_config or None,
     )
     sel_rows = event.selection.rows if event is not None and event.selection else []
     if sel_rows:
@@ -273,8 +298,9 @@ def render_accordion_drill(
     if expanded_tl and expanded_sc:
         lead_df = lead_lookup(expanded_tl, expanded_sc)
         st.caption(f"Leads under **{expanded_tl} → {expanded_sc}**")
+        lead_styled, lead_config = apply_table_style(lead_df, extra_center_cols=lead_extra_center_cols)
         st.dataframe(
-            apply_table_style(lead_df, extra_center_cols=lead_extra_center_cols),
+            lead_styled, column_config=lead_config or None,
             width="stretch", hide_index=True,
         )
 
@@ -299,39 +325,75 @@ def audio_index_font_color(v) -> str:
     return "color: #C0392B; font-weight: 700"
 
 
+def center_columns_config(df: pd.DataFrame, cols) -> dict:
+    """
+    Builds the st.column_config entries that actually center a set of
+    columns in st.dataframe's interactive grid.
+
+    A pandas Styler's `text-align` CSS has NO effect there -- Streamlit's
+    grid only reads cell background-color/font-color out of a Styler,
+    never layout properties -- so column_config's own `alignment` is the
+    only mechanism that reliably centers a column. The generic Column
+    type is used (not NumberColumn) because wrapping a DataFrame in a
+    Styler at all makes Streamlit re-serialize every cell as a string
+    (see apply_table_style), so the column is no longer "numeric" by the
+    time column_config sees it.
+
+    Keys are str(column_label), which is how Streamlit itself keys a
+    dataframe's column schema -- this also makes it work for MultiIndex
+    columns (e.g. the grouped Follow-up funnel tables), whose column
+    label is a tuple.
+    """
+    return {str(c): st.column_config.Column(alignment="center") for c in cols if c in df.columns}
+
+
 def apply_table_style(df: pd.DataFrame, extra_center_cols=(), color_index_col: str | None = None,
                       tier_levels=None):
     """
-    Return a pandas Styler for `df` with:
-      - all numeric-dtype columns center-aligned (Streamlit's default is
-        right-aligned for numerics and left-aligned for strings, so
-        setting text-align:center via Styler is the only way to change
-        it in the canvas-based grid)
-      - any additional string-formatted-numeric columns in
-        `extra_center_cols` also center-aligned (e.g. "88.5%" strings)
+    Returns (styler, column_config) for `df`:
+      - every float-dtype column is explicitly locked to exactly 1
+        decimal place via the Styler's own `.format()`. This is
+        necessary even for columns metrics.py already rounded with
+        `.round(1)`: merely wrapping a DataFrame in a Styler makes
+        pandas fall back to ITS OWN default float formatting -- 6
+        decimal places -- for any column that isn't given an explicit
+        `.format()`, regardless of the value already stored in it.
+        Integer columns are left alone (they already display as plain
+        integers).
+      - column_config centers every numeric column plus any
+        already-pre-formatted string column named in `extra_center_cols`
+        (e.g. "88.5%") -- see center_columns_config for why column_config,
+        not Styler CSS, is what actually centers a column here.
       - if color_index_col is set, its cell values get the
-        audio_index_font_color treatment (green/amber/red font)
+        audio_index_font_color treatment (green/amber/red font).
       - if tier_levels is a list of "TL" / "SC" markers matching the
-        row order (accordion drill), rows get the light TL/SC tier tint
+        row order (accordion drill), rows get the light TL/SC tier tint.
 
-    Everything else stays default. Compatible with Streamlit's
-    st.dataframe when passed as the first positional argument.
+    Callers must pass BOTH return values through:
+        styled, col_cfg = apply_table_style(df)
+        st.dataframe(styled, column_config=col_cfg, ...)
+    To also add caller-specific column_config (e.g. a help-tooltip
+    column), merge it in on top: {**col_cfg, **own_cfg} -- own_cfg
+    should set alignment="center" itself since it fully replaces the
+    auto-generated entry for that column.
     """
-    from pandas.api.types import is_numeric_dtype
-    numeric_cols = [c for c in df.columns if is_numeric_dtype(df[c])]
-    center_cols = list(dict.fromkeys(list(numeric_cols) + list(extra_center_cols)))
+    from pandas.api.types import is_numeric_dtype, is_bool_dtype, is_integer_dtype
+
+    numeric_cols = [c for c in df.columns if is_numeric_dtype(df[c]) and not is_bool_dtype(df[c])]
+    float_cols = [c for c in numeric_cols if not is_integer_dtype(df[c])]
+    extra_cols = [c for c in extra_center_cols if c in df.columns]
+    center_cols = list(dict.fromkeys(numeric_cols + extra_cols))
 
     styler = df.style
-    if center_cols:
-        # Filter to columns that actually exist (defensive)
-        center_cols = [c for c in center_cols if c in df.columns]
-        if center_cols:
-            styler = styler.set_properties(subset=center_cols, **{"text-align": "center"})
+    if float_cols:
+        styler = styler.format("{:.1f}", subset=float_cols, na_rep="—")
     if color_index_col and color_index_col in df.columns:
         styler = styler.map(audio_index_font_color, subset=[color_index_col])
     if tier_levels is not None:
         styler = styler.apply(_default_tier_row_style(tier_levels), axis=1)
-    return styler
+
+    column_config = center_columns_config(df, center_cols)
+    return styler, column_config
 
 
 def _fmt_count_pct(n: int, pct: int, dash_if_zero: bool = True) -> str:
@@ -407,8 +469,13 @@ def build_funnel_quality_overall_display(overall: pd.DataFrame) -> pd.DataFrame:
 def style_funnel_quality_state(display: pd.DataFrame):
     """
     Colors the State column red for Breaching, green for Within, and
-    center-aligns the numeric-looking columns (Now, Threshold) for the
-    Funnel Quality Overall table.
+    returns a column_config that centers the numeric-looking columns
+    (Now, Threshold) for the Funnel Quality Overall table -- see
+    center_columns_config for why column_config, not Styler CSS, is what
+    actually centers a column in st.dataframe's interactive grid.
+
+    Returns (styler, column_config); caller passes both through:
+    st.dataframe(styler, column_config=column_config, ...).
     """
     def _color(v: str) -> str:
         if v == "Breaching":
@@ -417,10 +484,8 @@ def style_funnel_quality_state(display: pd.DataFrame):
             return "color: #2e8b57; font-weight: 600"
         return ""
     styler = display.style.map(_color, subset=["State"])
-    center_cols = [c for c in ("Now", "Threshold") if c in display.columns]
-    if center_cols:
-        styler = styler.set_properties(subset=center_cols, **{"text-align": "center"})
-    return styler
+    column_config = center_columns_config(display, ["Now", "Threshold"])
+    return styler, column_config
 
 
 def build_funnel_quality_sc_display(sc_df: pd.DataFrame, category_label: str) -> pd.DataFrame:
@@ -995,7 +1060,8 @@ with st.container(border=True):
                 "no_audio_notes": "No audio notes",
                 "eligible_for_followups": "Eligible for follow-ups",
             })
-            st.dataframe(apply_table_style(c1_city_display), width="stretch", hide_index=True)
+            c1_city_styled, c1_city_config = apply_table_style(c1_city_display)
+            st.dataframe(c1_city_styled, column_config=c1_city_config, width="stretch", hide_index=True)
 
 st.divider()
 
@@ -1055,11 +1121,12 @@ with st.container(border=True):
                 ai_city_display = ai_city_display.rename(columns={
                     "coverage_pct": "Coverage %", "completeness_pct": "Completeness %", "audio_index": "Audio Index",
                 })
+                ai_city_styled, ai_city_config = apply_table_style(
+                    ai_city_display,
+                    extra_center_cols=["Coverage %", "Completeness %", "Audio Index"],
+                )
                 st.dataframe(
-                    apply_table_style(
-                        ai_city_display,
-                        extra_center_cols=["Coverage %", "Completeness %", "Audio Index"],
-                    ),
+                    ai_city_styled, column_config=ai_city_config,
                     width="stretch", hide_index=True,
                 )
 
@@ -1096,12 +1163,13 @@ with st.container(border=True):
                         lambda x: f"{x:.1f}%"
                     )
                     city_audio_display = city_audio_display.rename(columns={"cluster": "City", **audio_display_cols})
+                    city_audio_styled, city_audio_config = apply_table_style(
+                        city_audio_display,
+                        extra_center_cols=["% leads with a disposition missing"],
+                        color_index_col="Index",
+                    )
                     st.dataframe(
-                        apply_table_style(
-                            city_audio_display,
-                            extra_center_cols=["% leads with a disposition missing"],
-                            color_index_col="Index",
-                        ),
+                        city_audio_styled, column_config=city_audio_config,
                         width="stretch", hide_index=True,
                     )
                 else:
@@ -1131,8 +1199,9 @@ with st.container(border=True):
                 disp = M.disposition_breakdown(audio_base)
                 disp_display = disp.copy()
                 disp_display["Share"] = disp_display["Share"].map(lambda x: f"{x:.1f}%")
+                disp_styled, disp_config = apply_table_style(disp_display, extra_center_cols=["Share"])
                 st.dataframe(
-                    apply_table_style(disp_display, extra_center_cols=["Share"]),
+                    disp_styled, column_config=disp_config,
                     width="stretch", hide_index=True,
                 )
 
@@ -1197,8 +1266,8 @@ with st.container(border=True):
             "P1+P2": "P1+P2", "Others": "Others",
         }
         due_today_column_config = {
-            "%": st.column_config.NumberColumn(
-                "%",
+            "%": st.column_config.Column(
+                alignment="center",
                 help="Percentage of Worked out of Due Today leads for this row "
                      "(fu_completedat_today flag out of fu_due_date_today flag leads).",
             ),
@@ -1209,9 +1278,11 @@ with st.container(border=True):
             with st.expander("🔽 Due Today — City breakdown"):
                 cityb = M.breakdown_by(came_due, "cluster")
                 cityb_display = cityb.rename(columns={"cluster": "City", **display_cols})
+                cityb_styled, cityb_config = apply_table_style(cityb_display)
                 st.dataframe(
-                    apply_table_style(cityb_display),
-                    width="stretch", hide_index=True, column_config=due_today_column_config,
+                    cityb_styled,
+                    width="stretch", hide_index=True,
+                    column_config={**cityb_config, **due_today_column_config},
                 )
         else:
             st.markdown("**TL → SC → Lead**")
@@ -1282,8 +1353,8 @@ with st.container(border=True):
             "P1+P2": "P1+P2", "Others": "Others",
         }
         overdue_column_config = {
-            "Overdue %": st.column_config.NumberColumn(
-                "Overdue %",
+            "Overdue %": st.column_config.Column(
+                alignment="center",
                 help="This row's Overdue count over its own eligible-leads denominator "
                      "(funnel_bucket not booked/terminal/lost/later/customer_unreachable) "
                      "-- same ratio as the Overdue % shown at the top of this section.",
@@ -1295,9 +1366,11 @@ with st.container(border=True):
             with st.expander("🔽 Overdue — City breakdown"):
                 city_ov = M.overdue_breakdown_by(city_df, "cluster")
                 city_ov_display = city_ov.rename(columns={"cluster": "City", **ov_display_cols})
+                city_ov_styled, city_ov_config = apply_table_style(city_ov_display)
                 st.dataframe(
-                    apply_table_style(city_ov_display),
-                    width="stretch", hide_index=True, column_config=overdue_column_config,
+                    city_ov_styled,
+                    width="stretch", hide_index=True,
+                    column_config={**city_ov_config, **overdue_column_config},
                 )
         else:
             st.markdown("**TL → SC → Lead**")
@@ -1342,18 +1415,23 @@ with st.container(border=True):
             st.info("No leads in the funnel quality pool for this cluster.")
         else:
             fqtlw_display = build_funnel_quality_tlwise_display(fqtlw)
+            fqtlw_styled, fqtlw_config = apply_table_style(
+                fqtlw_display,
+                extra_center_cols=["With an outcome", "Did not pick up",
+                                    "+ Lost + Nurture", "Dated beyond 5 days"],
+            )
             st.dataframe(
-                apply_table_style(
-                    fqtlw_display,
-                    extra_center_cols=["With an outcome", "Did not pick up",
-                                        "+ Lost + Nurture", "Dated beyond 5 days"],
-                ),
+                fqtlw_styled, column_config=fqtlw_config,
                 width="stretch", hide_index=True,
             )
     else:
         fq_overall = M.funnel_quality_overall(city_df)
         fq_overall_display = build_funnel_quality_overall_display(fq_overall)
-        st.dataframe(style_funnel_quality_state(fq_overall_display), width="stretch", hide_index=True)
+        fq_overall_styled, fq_overall_config = style_funnel_quality_state(fq_overall_display)
+        st.dataframe(
+            fq_overall_styled, column_config=fq_overall_config,
+            width="stretch", hide_index=True,
+        )
 
         st.caption("Click a category below to see its SC-wise breakdown.")
 
@@ -1367,8 +1445,9 @@ with st.container(border=True):
                     # SC-breakdown columns are (SC, Leads, <measure>) where Leads/<measure>
                     # are pre-formatted string counts. Center-align those two.
                     sc_extra_center = [c for c in fq_sc_display.columns if c != "SC"]
+                    fq_sc_styled, fq_sc_config = apply_table_style(fq_sc_display, extra_center_cols=sc_extra_center)
                     st.dataframe(
-                        apply_table_style(fq_sc_display, extra_center_cols=sc_extra_center),
+                        fq_sc_styled, column_config=fq_sc_config,
                         width="stretch", hide_index=True,
                     )
 
@@ -1399,8 +1478,8 @@ with st.container(border=True):
         else:
             cw_display = build_funnel_group_wise_display(cw, "cluster", "City")
             st.dataframe(
-                cw_display.style.set_properties(**{"text-align": "center"}),
-                width="stretch", hide_index=True,
+                cw_display, width="stretch", hide_index=True,
+                column_config=center_columns_config(cw_display, cw_display.columns),
             )
     elif funnel_cut == GROUP_CUT_LABEL:
         if "funnel_tlwise_drill_tl" not in st.session_state:
@@ -1426,8 +1505,8 @@ with st.container(border=True):
                 st.caption("Click a row to drill into that TL's SCs.")
                 tlw_display = build_funnel_group_wise_display(tlw, "tl", "TL")
                 picked = render_drill_table(
-                    tlw_display.style.set_properties(**{"text-align": "center"}),
-                    tlw["tl"], "funnel_tlwise_tl_table",
+                    tlw_display, tlw["tl"], "funnel_tlwise_tl_table",
+                    center_all_columns=True,
                 )
                 if picked is not None:
                     st.session_state.funnel_tlwise_drill_tl = picked
@@ -1440,8 +1519,8 @@ with st.container(border=True):
             else:
                 scw_display = build_funnel_group_wise_display(scw, "sc", "SC")
                 st.dataframe(
-                    scw_display.style.set_properties(**{"text-align": "center"}),
-                    width="stretch", hide_index=True,
+                    scw_display, width="stretch", hide_index=True,
+                    column_config=center_columns_config(scw_display, scw_display.columns),
                 )
     else:
         funnel_boxes = M.funnel_box_counts(city_df)
@@ -1466,7 +1545,8 @@ with st.container(border=True):
                     if raw_status == "another_follow_up_required":
                         # ---- Another Follow up needed: 1st cut (When/Leads/Share) ----
                         when_tbl = M.another_fu_when_table(box_pool, str(as_of))
-                        st.dataframe(apply_table_style(when_tbl), width="stretch", hide_index=True)
+                        when_styled, when_config = apply_table_style(when_tbl)
+                        st.dataframe(when_styled, column_config=when_config, width="stretch", hide_index=True)
 
                         affu_display_cols = {
                             "leads": "Leads", "overdue": "Overdue", "due_today": "Due today",
@@ -1478,8 +1558,9 @@ with st.container(border=True):
                             st.markdown("**City breakdown**")
                             city_affu = M.another_fu_breakdown_by(box_pool, str(as_of), "cluster")
                             city_affu_display = city_affu.rename(columns={"cluster": "City", **affu_display_cols})
+                            city_affu_styled, city_affu_config = apply_table_style(city_affu_display)
                             st.dataframe(
-                                apply_table_style(city_affu_display),
+                                city_affu_styled, column_config=city_affu_config,
                                 width="stretch", hide_index=True,
                             )
                         else:
@@ -1501,7 +1582,8 @@ with st.container(border=True):
                     elif raw_status == "dnp":
                         # ---- DNP: 1st cut (Consecutive DNPs/Leads/Share) ----
                         ct = M.dnp_consecutive_table(box_pool)
-                        st.dataframe(apply_table_style(ct), width="stretch", hide_index=True)
+                        ct_styled, ct_config = apply_table_style(ct)
+                        st.dataframe(ct_styled, column_config=ct_config, width="stretch", hide_index=True)
 
                         dnp_display_cols = {
                             "dnp_leads": "DNP leads", "three_plus": "3+ in a row", "avg_dnps": "Avg DNPs",
@@ -1512,8 +1594,9 @@ with st.container(border=True):
                             st.markdown("**City breakdown**")
                             city_dnp = M.dnp_breakdown_by(box_pool, "cluster")
                             city_dnp_display = city_dnp.rename(columns={"cluster": "City", **dnp_display_cols})
+                            city_dnp_styled, city_dnp_config = apply_table_style(city_dnp_display)
                             st.dataframe(
-                                apply_table_style(city_dnp_display),
+                                city_dnp_styled, column_config=city_dnp_config,
                                 width="stretch", hide_index=True,
                             )
                         else:
@@ -1548,8 +1631,9 @@ with st.container(border=True):
                             "avg_fus": "Avg FUs", "avg_days_to_last_fu": "Avg days to last FU", "p1p2": "P1+P2",
                         })
                         gb_display["Share"] = gb_display["Share"].map(lambda x: f"{x:.1f}%")
+                        gb_styled, gb_config = apply_table_style(gb_display, extra_center_cols=["Share"])
                         st.dataframe(
-                            apply_table_style(gb_display, extra_center_cols=["Share"]),
+                            gb_styled, column_config=gb_config,
                             width="stretch", hide_index=True,
                         )
 
