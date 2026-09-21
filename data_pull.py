@@ -35,7 +35,7 @@ Streamlit app can just do:
 
     from data_pull import load_followup_dashboard_data
     df, column_labels = load_followup_dashboard_data(
-        cohort_from="2026-07-31", start_date="2026-08-01", end_date="2026-09-18",
+        cohort_from="2026-07-31", start_date="2026-09-01", end_date="2026-09-18",
     )
 """
 

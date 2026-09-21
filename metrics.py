@@ -251,19 +251,26 @@ def category_display(row) -> str:
 # Lead-level Category sort order: another_follow_up_required first, then
 # agreed_to_meet, then everything else (P1+P2, Others, ...) in its existing
 # relative order (stable sort) -- replaces the old Priority-based sort for
-# the Due Today / Overdue / Audio Index lead-level drill-down tables.
+# the Audio Index lead-level drill-down table.
 _CATEGORY_SORT_ORDER = ["another_follow_up_required", "agreed_to_meet"]
 
+# Due Today / Overdue lead-level Category sort order: agreed_to_meet first,
+# then another_follow_up_required, then P1+P2, then everything else
+# (Others, ...) in its existing relative order (stable sort).
+_DUE_OVERDUE_CATEGORY_SORT_ORDER = ["agreed_to_meet", "another_follow_up_required", "p1+p2"]
 
-def _category_sort_frame(df: pd.DataFrame, category_col: str = "Category") -> pd.DataFrame:
+
+def _category_sort_frame(df: pd.DataFrame, category_col: str = "Category", order: list[str] | None = None) -> pd.DataFrame:
     """
-    Sorts a lead-level table by Category: another_follow_up_required leads
-    first, then agreed_to_meet, then any other Category value, kept in its
-    existing relative order (stable sort).
+    Sorts a lead-level table by Category according to `order` (lower-cased
+    category values, highest priority first); any Category value not in
+    `order` sorts last, keeping its existing relative order (stable sort).
+    Defaults to _CATEGORY_SORT_ORDER when `order` isn't given.
     """
+    sort_order = order if order is not None else _CATEGORY_SORT_ORDER
     raw = df[category_col].astype(str).str.strip().str.lower()
-    rank_map = {name: i for i, name in enumerate(_CATEGORY_SORT_ORDER)}
-    rank = raw.map(rank_map).fillna(len(_CATEGORY_SORT_ORDER))
+    rank_map = {name: i for i, name in enumerate(sort_order)}
+    rank = raw.map(rank_map).fillna(len(sort_order))
     out = df.assign(_cat_rank=rank)
     out = out.sort_values(by="_cat_rank", kind="stable")
     return out.drop(columns=["_cat_rank"]).reset_index(drop=True)
@@ -409,8 +416,8 @@ def lead_table(came_due: pd.DataFrame, today_str: str, tl_name: str | None = Non
     Audio (audio_duration_sec), Missing (dispositions_missing), FUs done
     (total_followup_done), Last FU (latest_status), Due (today's date),
     State (constant "Due Today"). No Outcome column. Sorted by Category:
-    another_follow_up_required first, then agreed_to_meet, then everything
-    else.
+    agreed_to_meet first, then another_follow_up_required, then P1+P2,
+    then everything else (Others).
     """
     subset = came_due.copy()
     if tl_name:
@@ -433,7 +440,7 @@ def lead_table(came_due: pd.DataFrame, today_str: str, tl_name: str | None = Non
         "Due": today_str,
         "State": "Due Today",
     }).reset_index(drop=True)
-    return _category_sort_frame(out, "Category")
+    return _category_sort_frame(out, "Category", order=_DUE_OVERDUE_CATEGORY_SORT_ORDER)
 
 
 # ---------------------------------------------------------------------------
@@ -607,7 +614,8 @@ def overdue_lead_table(overdue_pool_df: pd.DataFrame, tl_name: str | None = None
     """
     Lead-level table for the Overdue drill-down. Same Category/Priority/
     Audio/Missing/FUs-done/Last-FU definitions as lead_table() (no Outcome
-    column, sorted by Category), but:
+    column, sorted by Category: agreed_to_meet first, then
+    another_follow_up_required, then P1+P2, then everything else), but:
       - Category shows the lead's own raw value -- see category_display.
       - Due: the lead's own followup_due_date (not today's date).
       - Ageing: the lead's overdue_days number rendered as text, e.g. "8 days"
@@ -638,7 +646,7 @@ def overdue_lead_table(overdue_pool_df: pd.DataFrame, tl_name: str | None = None
         "Due": subset.get("followup_due_date"),
         "Ageing": ageing,
     }).reset_index(drop=True)
-    return _category_sort_frame(out, "Category")
+    return _category_sort_frame(out, "Category", order=_DUE_OVERDUE_CATEGORY_SORT_ORDER)
 
 
 # ---------------------------------------------------------------------------
@@ -708,10 +716,11 @@ def audio_index_summary(df: pd.DataFrame) -> dict:
 
 def audio_index_summary_by_city(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Coverage % / Completeness % / Audio Index, broken down one row per city
-    (the `cluster` column) -- used for the Pan-India Audio Index section's
-    City breakdown table. Same definitions as audio_index_summary, just
-    computed per city.
+    Audio Index / Coverage % / Completeness %, broken down one row per
+    city (the `cluster` column) -- used for the Pan-India Audio Index
+    section's City breakdown table. Same definitions as
+    audio_index_summary, just computed per city. Audio Index is the 2nd
+    column (right after City) since it's this table's headline number.
     """
     rows = []
     cluster = df.get("cluster", pd.Series(dtype=str)).astype(str).str.strip()
@@ -720,11 +729,11 @@ def audio_index_summary_by_city(df: pd.DataFrame) -> pd.DataFrame:
         a = audio_index_summary(sub)
         rows.append({
             "City": city,
+            "audio_index": a["audio_index"],
             "coverage_pct": a["coverage_pct"],
             "completeness_pct": a["completeness_pct"],
-            "audio_index": a["audio_index"],
         })
-    return pd.DataFrame(rows, columns=["City", "coverage_pct", "completeness_pct", "audio_index"])
+    return pd.DataFrame(rows, columns=["City", "audio_index", "coverage_pct", "completeness_pct"])
 
 
 def apply_meetings_today_filter(df: pd.DataFrame, enabled: bool) -> pd.DataFrame:

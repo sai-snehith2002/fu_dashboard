@@ -1,13 +1,13 @@
 name: Refresh FollowUp dashboard data
 
-# Runs every 2 hours, on the even hour (UTC) -- GitHub schedules this to
-# roughly :00 of every second hour but can run a few minutes late under
-# load; that's fine for a 2-hourly refresh. workflow_dispatch lets you
+# Runs every hour, on the hour (UTC) -- GitHub schedules this to
+# roughly :00 of every hour but can run a few minutes late under
+# load; that's fine for a hourly refresh. workflow_dispatch lets you
 # trigger a run manually from the Actions tab to test it without waiting
 # for the schedule.
 on:
   schedule:
-    - cron: "0 */2 * * *"
+    - cron: "0 */1 * * *"
   workflow_dispatch: {}
 
 # Prevents two runs from overlapping if one is ever slow to finish (the
@@ -52,7 +52,7 @@ jobs:
         run: |
           python data_pull.py \
             --cohort-from "2026-07-31" \
-            --start-date "2026-08-01" \
+            --start-date "2026-09-01" \
             --end-date "$END_DATE" \
             --output followup_dashboard.csv
 

@@ -1144,12 +1144,8 @@ with st.container(border=True):
 
         st.subheader("Audio Index — drill down")
         meetings_today_only = st.toggle("From Meeting's Today", key="audio_meetings_today")
-        st.caption(
-            "Filtered to leads with fu_completedat_today = 1."
-            if meetings_today_only else
-            "Showing leads eligible for follow-ups "
-            "(Meeting Done - Closed on Follow-Up - No audio notes - Closed on spot)."
-        )
+        if meetings_today_only:
+            st.caption("Filtered to leads with fu_completedat_today = 1.")
 
         meeting_done_pool = M.apply_meetings_today_filter(city_df, meetings_today_only)
         audio_base = M.audio_pool(meeting_done_pool)
@@ -1266,12 +1262,6 @@ with st.container(border=True):
                  "Another follow-up's own Due / Worked / Booked, position by position.",
         )
         cat3.caption(f"{dts['others_pct']:.1f}%")
-        st.caption(
-            "Each box reads Due today / Worked today / Booked for that box's own leads. "
-            "Others = the top box's three numbers minus Agreed+Another's three numbers "
-            "(not also net of P1+P2, since a lead can be both P1/P2 and Agreed+Another). "
-            "The % below each box is still Worked today over Due today for that box."
-        )
 
         came_due = M.came_due_pool(city_df)
 
@@ -1356,11 +1346,6 @@ with st.container(border=True):
         ocat1.metric("Agreed to Meet + Another follow-up", f"{ov['agreed_another']:,}")
         ocat2.metric("P1 + P2", f"{ov['p1p2']:,}")
         ocat3.metric("Others", f"{ov['others']:,}")
-        st.caption(
-            "Agreed+Another and P1+P2 are counted independently (a lead can be both), "
-            "so Others = total − P1+P2 − Agreed+Another can run lower than the drill-down "
-            "table below, which assigns each lead to exactly one category."
-        )
 
         ov_display_cols = {
             "overdue": "Overdue", "overdue_pct": "Overdue %",

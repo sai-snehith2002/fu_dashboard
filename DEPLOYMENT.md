@@ -1,4 +1,4 @@
-# Deploying the FollowUp Dashboard (live, 2-hourly refresh)
+# Deploying the FollowUp Dashboard (live, hourly refresh)
 
 ## Feasibility check (read this first)
 
@@ -8,7 +8,7 @@ suited to what you had in mind. Straight talk:
 | Piece | Verdict | Why |
 |---|---|---|
 | **Streamlit Community Cloud** as the host | ✅ Feasible on the free tier | Wakes on visits, auto-redeploys on git push, reads a CSV committed to the repo. 1 GB RAM is plenty for a 10-20 MB CSV. |
-| **GitHub Actions** cron every 2 hours for the Metabase pull | ✅ Feasible on the free tier | Query time is 2-3 min per run; that's ~36 min/day = ~18 hours/month, comfortably inside the free 2000 min/month for private repos (unlimited for public). Job timeout is 15 min per run — plenty of headroom over the 2-3 min query. |
+| **GitHub Actions** cron every hours for the Metabase pull | ✅ Feasible on the free tier | Query time is 2-3 min per run; that's ~36 min/day = ~18 hours/month, comfortably inside the free 2000 min/month for private repos (unlimited for public). Job timeout is 15 min per run — plenty of headroom over the 2-3 min query. |
 | **GitHub Codespaces as the *hosting* platform** | ❌ **NOT feasible** | Codespaces is a *development* environment, not a hosting one. The container stops after 30 min of inactivity, the public URL dies with it, and the free tier's 120 core-hours/month gets burned in ~5 days of 24×7 uptime. It also gives you no way to make an app publicly reachable at a stable URL. |
 | **GitHub Codespaces as the *development* environment** | ✅ Feasible and included below | Opens a full VS Code + Python 3.11 in the browser with all dependencies pre-installed and Streamlit's port pre-forwarded, so you can edit and preview the app without installing anything locally. This is what the included `.devcontainer/devcontainer.json` is for. |
 | **10-20 MB CSV, 2-3 min query, 2-hourly refresh** | ✅ All fits | Streamlit reads a 15 MB CSV in ~1-2s. Git handles it fine (delta compression keeps repo growth to ~1-2 GB/year; well inside GitHub's 5 GB soft limit for years). |
@@ -197,7 +197,7 @@ talks to Metabase itself, so it doesn't need `MB_API_KEY` at all.
 
 ## If the anchor dates ever need to change
 
-`cohort_from` (`2026-07-31`) and `start_date` (`2026-08-01`) are fixed
+`cohort_from` (`2026-07-31`) and `start_date` (`2026-09-01`) are fixed
 in `.github/workflows/refresh_data.yml`'s "Pull latest data from
 Metabase" step — edit those two `--cohort-from` / `--start-date`
 values directly in the workflow file and commit, the same way you'd
