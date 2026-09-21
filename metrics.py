@@ -43,54 +43,106 @@ def _bool_series(df: pd.DataFrame, col: str) -> pd.Series:
     return s.fillna(False).astype(bool)
 
 
-def eligible_for_followups_pool(df: pd.DataFrame) -> pd.DataFrame:
+def _followup_buckets(df: pd.DataFrame) -> dict:
     """
-    Leads eligible for follow-ups: order_closure_datetime_ist blank AND
-    audio_present == True. Shared by Card 1's count and the Audio Index
-    section, which uses this exact pool as its sub-section base.
+    Classifies every row of `df` into exactly one of four mutually
+    exclusive buckets, restricted to the "Meetings done" population
+    (sc_channel == "Field Sale SC"). Priority order (first match wins):
+
+      1. Closed on spot          -- is_on_spot == True
+      2. Closed on Follow-Up     -- is_on_spot == False AND
+                                     order_closure_datetime_ist is NOT blank
+      3. No audio notes          -- (of what's left) notes_submitted_in_range == 0
+                                     AND order_closure_datetime_ist is blank
+      4. Eligible for follow-ups -- everything else in Meetings done
+
+    This priority ordering exists because the four conditions, read
+    independently, are NOT mutually exclusive: a record with
+    is_on_spot == True, notes_submitted_in_range == 0 and
+    order_closure_datetime_ist blank would satisfy both "Closed on spot"
+    and "No audio notes" at the same time. Classifying by priority
+    instead guarantees the four buckets partition Meetings done exactly,
+    so "Eligible for follow-ups == Meetings done - Closed on Follow-Up -
+    No audio Notes - Closed on spot" holds as an exact identity rather
+    than an approximation that can double-count overlapping rows.
+
+    Returns a dict of boolean masks aligned to df.index: "meetings_done",
+    "closed_on_spot", "closed_on_followup", "no_audio_notes", "eligible".
     """
+    sc_channel = df.get("sc_channel", pd.Series(dtype=str)).astype(str).str.strip().str.lower()
+    meetings_done = sc_channel == "field sale sc"
+
+    on_spot = _bool_series(df, "is_on_spot")
     order_closure_blank = (
         df.get("order_closure_datetime_ist", pd.Series("", index=df.index))
         .astype(str).str.strip() == ""
     )
-    audio = _bool_series(df, "audio_present")
-    return df[order_closure_blank & audio].copy()
+    notes_in_range = pd.to_numeric(df.get("notes_submitted_in_range"), errors="coerce")
+
+    closed_on_spot = meetings_done & on_spot
+    closed_on_followup = meetings_done & ~on_spot & ~order_closure_blank
+    no_audio_notes = meetings_done & ~on_spot & order_closure_blank & (notes_in_range == 0)
+    eligible = meetings_done & ~closed_on_spot & ~closed_on_followup & ~no_audio_notes
+
+    return {
+        "meetings_done": meetings_done,
+        "closed_on_spot": closed_on_spot,
+        "closed_on_followup": closed_on_followup,
+        "no_audio_notes": no_audio_notes,
+        "eligible": eligible,
+    }
+
+
+def eligible_for_followups_pool(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Leads eligible for follow-ups under the corrected definition: within
+    Meetings done, not closed on spot, not closed via a later follow-up,
+    and not missing audio notes -- see _followup_buckets for the exact
+    priority-based classification that keeps this an exact partition of
+    Meetings done. Shared by Card 1's count and the Audio Index section,
+    which now uses this exact pool as its base population (previously
+    Audio Index used its own, separately-defined audio_present/is_on_spot
+    pool -- see audio_pool()).
+    """
+    b = _followup_buckets(df)
+    return df[b["eligible"]].copy()
 
 
 def card1_metrics(df: pd.DataFrame) -> dict:
     """
     City snapshot Card 1, computed on the cluster-filtered DataFrame.
+    All five numbers are computed within the "Meetings done" population
+    (sc_channel == "Field Sale SC") and partition it exactly -- see
+    _followup_buckets for the priority order that makes this an exact
+    partition rather than independently-overlapping counts.
 
     - Meetings done: sc_channel == "Field Sale SC" (case-insensitive)
-    - Closed on spot: is_on_spot == True AND audio_present == False
-    - Eligible for follow-ups: order_closure_datetime_ist blank AND audio_present == True
-    - No audio notes: notes_submitted_in_range == 0
+    - Closed on spot: is_on_spot == True
+    - Closed on Follow-Up: is_on_spot == False AND order_closure_datetime_ist is not blank
+    - No audio notes: (of the rest) notes_submitted_in_range == 0 AND order_closure_datetime_ist blank
+    - Eligible for follow-ups: Meetings done - Closed on Follow-Up - No audio Notes - Closed on spot
+      (i.e. everything left in Meetings done after the three buckets above)
     """
-    sc_channel = df.get("sc_channel", pd.Series(dtype=str)).astype(str).str.strip().str.lower()
-    meetings_done = int((sc_channel == "field sale sc").sum())
+    b = _followup_buckets(df)
+    meetings_done = int(b["meetings_done"].sum())
+    closed_on_spot = int(b["closed_on_spot"].sum())
+    closed_on_followup = int(b["closed_on_followup"].sum())
+    no_audio_notes = int(b["no_audio_notes"].sum())
+    eligible_for_followups = int(b["eligible"].sum())
 
-    on_spot = _bool_series(df, "is_on_spot")
-    audio = _bool_series(df, "audio_present")
-
-    closed_on_spot = int((on_spot & ~audio).sum())
-
-    eligible_for_followups = len(eligible_for_followups_pool(df))
-
-    notes_in_range = pd.to_numeric(df.get("notes_submitted_in_range"), errors="coerce")
-    no_audio_notes = int((notes_in_range == 0).sum())
-
-    closed_on_spot_pct = (closed_on_spot / meetings_done * 100) if meetings_done else 0.0
-    eligible_for_followups_pct = (eligible_for_followups / meetings_done * 100) if meetings_done else 0.0
-    no_audio_notes_pct = (no_audio_notes / meetings_done * 100) if meetings_done else 0.0
+    def _pct(n: int) -> float:
+        return (n / meetings_done * 100) if meetings_done else 0.0
 
     return {
         "meetings_done": meetings_done,
         "closed_on_spot": closed_on_spot,
-        "eligible_for_followups": eligible_for_followups,
+        "closed_on_followup": closed_on_followup,
         "no_audio_notes": no_audio_notes,
-        "closed_on_spot_pct": closed_on_spot_pct,
-        "eligible_for_followups_pct": eligible_for_followups_pct,
-        "no_audio_notes_pct": no_audio_notes_pct,
+        "eligible_for_followups": eligible_for_followups,
+        "closed_on_spot_pct": _pct(closed_on_spot),
+        "closed_on_followup_pct": _pct(closed_on_followup),
+        "no_audio_notes_pct": _pct(no_audio_notes),
+        "eligible_for_followups_pct": _pct(eligible_for_followups),
     }
 
 
@@ -102,7 +154,7 @@ def _known_cities(df: pd.DataFrame) -> list[str]:
 
 def card1_metrics_by_city(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Card 1's four counts, broken down one row per city (the `cluster`
+    Card 1's five counts, broken down one row per city (the `cluster`
     column) -- used for the Pan-India Overview section's City breakdown
     table. Same definitions as card1_metrics, just computed per city.
     """
@@ -115,11 +167,13 @@ def card1_metrics_by_city(df: pd.DataFrame) -> pd.DataFrame:
             "City": city,
             "meetings_done": m["meetings_done"],
             "closed_on_spot": m["closed_on_spot"],
-            "eligible_for_followups": m["eligible_for_followups"],
+            "closed_on_followup": m["closed_on_followup"],
             "no_audio_notes": m["no_audio_notes"],
+            "eligible_for_followups": m["eligible_for_followups"],
         })
     return pd.DataFrame(
-        rows, columns=["City", "meetings_done", "closed_on_spot", "eligible_for_followups", "no_audio_notes"]
+        rows, columns=["City", "meetings_done", "closed_on_spot", "closed_on_followup",
+                       "no_audio_notes", "eligible_for_followups"]
     )
 
 
@@ -564,14 +618,20 @@ TOTAL_DISPOSITIONS = 11
 
 def audio_pool(df: pd.DataFrame) -> pd.DataFrame:
     """
-    The Audio Index sub-section's base population (Split + Disposition
-    Breakdown): audio_present == True AND is_on_spot == False. This is a
-    distinct pool from Card 1's eligible_for_followups_pool -- no
-    order_closure_datetime_ist conditioning here.
+    The Audio Index sub-section's base population (Coverage %/
+    Completeness %/Audio Index, Split, Disposition Breakdown, and the
+    TL -> SC -> Lead drill-down): the corrected "Eligible for
+    follow-ups" pool -- see eligible_for_followups_pool() /
+    _followup_buckets() -- i.e. Meetings done, minus Closed on spot,
+    Closed on Follow-Up and No audio notes.
+
+    This used to be its own, separately-defined
+    audio_present == True & is_on_spot == False pool; per the latest
+    requirement, Audio Index now shares the exact same "eligible for
+    follow-ups" pool that Card 1's own count uses, so the two sections
+    never disagree about which leads are "eligible."
     """
-    audio = _bool_series(df, "audio_present")
-    on_spot = _bool_series(df, "is_on_spot")
-    return df[audio & ~on_spot].copy()
+    return eligible_for_followups_pool(df)
 
 
 def audio_index_summary(df: pd.DataFrame) -> dict:
@@ -579,11 +639,11 @@ def audio_index_summary(df: pd.DataFrame) -> dict:
     df must already be cluster + sc_channel filtered (the "Meeting Done"
     population).
 
-    - Coverage %: count(audio_present == True AND is_on_spot == False),
-      over count(is_on_spot == False).
-    - Completeness %: using that same audio_present==True & is_on_spot==False
-      pool for both parts -- (pool_count * 12 - sum(dispositions_missing
-      over the pool)) / (pool_count * 12) * 100.
+    - Coverage %: count(the eligible-for-follow-ups pool -- see
+      audio_pool()), over count(is_on_spot == False).
+    - Completeness %: using that same eligible pool for both parts --
+      (pool_count * 12 - sum(dispositions_missing over the pool)) /
+      (pool_count * 12) * 100.
     - Audio Index: (Coverage % * Completeness %) / 1000, clipped to
       [0, 10] and rounded to 1 decimal -- same formula as the TL/SC-wise
       Index column in audio_split_breakdown().
@@ -675,11 +735,12 @@ def audio_split_breakdown(meeting_done_pool: pd.DataFrame, audio_base: pd.DataFr
       because the Coverage %/Completeness % denominator (is_on_spot ==
       False) isn't restricted to audio_present == True, so it can't be
       derived from audio_base alone.
-    - audio_base: meeting_done_pool narrowed to audio_present == True AND
-      is_on_spot == False (audio_pool(meeting_done_pool)) -- the
-      sub-section's actual leads, used for Leads / % missing / avg missing
-      and, via its own count and dispositions_missing sum, the Coverage
-      %/Completeness % numerator for the Index.
+    - audio_base: meeting_done_pool narrowed to the corrected
+      eligible-for-follow-ups pool (audio_pool(meeting_done_pool) --
+      see eligible_for_followups_pool) -- the sub-section's actual
+      leads, used for Leads / % missing / avg missing and, via its own
+      count and dispositions_missing sum, the Coverage %/Completeness %
+      numerator for the Index.
     """
     md, ab = meeting_done_pool, audio_base
     if filter_col and filter_value is not None:

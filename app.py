@@ -950,14 +950,16 @@ with st.container(border=True):
     st.header("Overview")
 
     c1 = M.card1_metrics(city_df)
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Meetings done", f"{c1['meetings_done']:,}")
     col2.metric("Closed on spot", f"{c1['closed_on_spot']:,}")
     col2.caption(f"{c1['closed_on_spot_pct']:.1f}% of Meetings done")
-    col3.metric("Eligible for follow-ups", f"{c1['eligible_for_followups']:,}")
-    col3.caption(f"{c1['eligible_for_followups_pct']:.1f}% of Meetings done")
+    col3.metric("Closed on Follow-Up", f"{c1['closed_on_followup']:,}")
+    col3.caption(f"{c1['closed_on_followup_pct']:.1f}% of Meetings done")
     col4.metric("No audio notes", f"{c1['no_audio_notes']:,}")
     col4.caption(f"{c1['no_audio_notes_pct']:.1f}% of Meetings done")
+    col5.metric("Eligible for follow-ups", f"{c1['eligible_for_followups']:,}")
+    col5.caption(f"{c1['eligible_for_followups_pct']:.1f}% of Meetings done")
 
     if IS_PAN_INDIA:
         with st.expander("🔽 City breakdown"):
@@ -965,8 +967,9 @@ with st.container(border=True):
             c1_city_display = c1_city.rename(columns={
                 "meetings_done": "Meetings done",
                 "closed_on_spot": "Closed on spot",
-                "eligible_for_followups": "Eligible for follow-ups",
+                "closed_on_followup": "Closed on Follow-Up",
                 "no_audio_notes": "No audio notes",
+                "eligible_for_followups": "Eligible for follow-ups",
             })
             st.dataframe(apply_table_style(c1_city_display), width="stretch", hide_index=True)
 
@@ -1001,14 +1004,14 @@ with st.container(border=True):
                 <div>
                   <div class="ai-hero-sec-label">
                     Coverage %
-                    <span class="ai-hero-help-sm" title="Represents the percentage of leads whose Audio is Present">?</span>
+                    <span class="ai-hero-help-sm" title="Represents the percentage of not-on-spot meetings that are eligible for follow-ups (Meeting Done - Closed on Follow-Up - No audio notes - Closed on spot)">?</span>
                   </div>
                   <div class="ai-hero-sec-value">{fmt_pct(ai["coverage_pct"])}</div>
                 </div>
                 <div>
                   <div class="ai-hero-sec-label">
                     Completeness %
-                    <span class="ai-hero-help-sm" title="Share of all {M.TOTAL_DISPOSITIONS} disposition slots, across leads whose Audio is present">?</span>
+                    <span class="ai-hero-help-sm" title="Share of all {M.TOTAL_DISPOSITIONS} disposition slots, across leads eligible for follow-ups">?</span>
                   </div>
                   <div class="ai-hero-sec-value">{fmt_pct(ai["completeness_pct"])}</div>
                 </div>
@@ -1041,7 +1044,8 @@ with st.container(border=True):
         st.caption(
             "Filtered to leads with fu_completedat_today = 1."
             if meetings_today_only else
-            "Showing all leads with audio_present = True & is_on_spot = False."
+            "Showing leads eligible for follow-ups "
+            "(Meeting Done - Closed on Follow-Up - No audio notes - Closed on spot)."
         )
 
         meeting_done_pool = M.apply_meetings_today_filter(city_df, meetings_today_only)
