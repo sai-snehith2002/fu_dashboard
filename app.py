@@ -488,13 +488,25 @@ def style_funnel_quality_state(display: pd.DataFrame):
     return styler, column_config
 
 
-def build_funnel_quality_sc_display(sc_df: pd.DataFrame, category_label: str) -> pd.DataFrame:
-    """SC / Leads / <category label>, for one category's expander."""
-    return pd.DataFrame({
+def build_funnel_quality_sc_display(
+    sc_df: pd.DataFrame, category_label: str, pct_col_label: str | None = None
+) -> pd.DataFrame:
+    """
+    SC / Leads / <category label>, for one category's expander. When
+    pct_col_label is given (only for the "Did not pick up" category's
+    DNP% column), adds a 4th column: <category label> as a percentage of
+    Leads, rounded to 2 decimals with a "%" sign.
+    """
+    out = pd.DataFrame({
         "SC": sc_df["sc"],
         "Leads": sc_df["leads"].map(lambda n: f"{int(n):,}"),
         category_label: sc_df["matched_leads"].map(lambda n: f"{int(n):,}"),
     })
+    if pct_col_label:
+        leads_safe = sc_df["leads"].where(sc_df["leads"] != 0)
+        pct = (sc_df["matched_leads"] / leads_safe * 100).round(2)
+        out[pct_col_label] = pct.map(lambda x: f"{x:.2f}%" if pd.notna(x) else "—")
+    return out
 
 
 def build_funnel_quality_tlwise_display(tlw: pd.DataFrame) -> pd.DataFrame:
@@ -1221,9 +1233,11 @@ with st.container(border=True):
         st.info("No follow-ups came due today for this cluster.")
     else:
         st.metric(
-            "Completed of today's due",
-            f"{dts['completed_count']:,}/{dts['total_came_due']:,}",
-            help="Count of leads with fu_completedat_today=1 out of count of leads with fu_due_date_today=1.",
+            "Due Today / Worked Today / Booked",
+            f"{dts['total_came_due']:,}/{dts['completed_count']:,}/{dts['booked_count']:,}",
+            help="Due Today: leads with fu_due_date_today=1. Worked Today: of those, "
+                 "fu_completedat_today=1. Booked: of Worked Today, order_closure_datetime_ist "
+                 "is filled in.",
         )
         if not IS_PAN_INDIA:
             top_tl_note = (
@@ -1235,27 +1249,28 @@ with st.container(border=True):
         cat1, cat2, cat3 = st.columns(3)
         cat1.metric(
             "Agreed to Meet + Another follow-up",
-            f"{dts['agreed_another_completed']:,}/{dts['agreed_another']:,}",
-            help="Completed today for this outcome, over Due today for this outcome.",
+            f"{dts['agreed_another']:,}/{dts['agreed_another_completed']:,}/{dts['agreed_another_booked']:,}",
+            help="Due today / Worked today / Booked, for leads with this outcome.",
         )
         cat1.caption(f"{dts['agreed_another_pct']:.1f}%")
         cat2.metric(
             "P1 + P2",
-            f"{dts['p1p2_completed']:,}/{dts['p1p2']:,}",
-            help="Completed today for this outcome, over Due today for this outcome.",
+            f"{dts['p1p2']:,}/{dts['p1p2_completed']:,}/{dts['p1p2_booked']:,}",
+            help="Due today / Worked today / Booked, for leads with priority P1 or P2.",
         )
         cat2.caption(f"{dts['p1p2_pct']:.1f}%")
         cat3.metric(
             "Others",
-            f"{dts['others_completed']:,}/{dts['others']:,}",
-            help="Completed today for this outcome, over Due today for this outcome.",
+            f"{dts['others']:,}/{dts['others_completed']:,}/{dts['others_booked']:,}",
+            help="Due Today / Worked Today / Booked (the top box) minus Agreed to Meet + "
+                 "Another follow-up's own Due / Worked / Booked, position by position.",
         )
         cat3.caption(f"{dts['others_pct']:.1f}%")
         st.caption(
-            "Agreed+Another and P1+P2 are counted independently (a lead can be both), "
-            "so Others = total − P1+P2 − Agreed+Another can run lower than the drill-down "
-            "table below, which assigns each lead to exactly one category. Each fraction "
-            "above is that outcome's Completed today over its own Due today count."
+            "Each box reads Due today / Worked today / Booked for that box's own leads. "
+            "Others = the top box's three numbers minus Agreed+Another's three numbers "
+            "(not also net of P1+P2, since a lead can be both P1/P2 and Agreed+Another). "
+            "The % below each box is still Worked today over Due today for that box."
         )
 
         came_due = M.came_due_pool(city_df)
@@ -1441,9 +1456,14 @@ with st.container(border=True):
                 if fq_sc.empty:
                     st.caption("No leads in this category.")
                 else:
-                    fq_sc_display = build_funnel_quality_sc_display(fq_sc, cat_row["measure"])
-                    # SC-breakdown columns are (SC, Leads, <measure>) where Leads/<measure>
-                    # are pre-formatted string counts. Center-align those two.
+                    # DNP% (matched leads as a % of that SC's leads) only applies to
+                    # the "Did not pick up" category, per spec.
+                    pct_col_label = "DNP%" if cat_row["key"] == "dnp" else None
+                    fq_sc_display = build_funnel_quality_sc_display(
+                        fq_sc, cat_row["measure"], pct_col_label=pct_col_label
+                    )
+                    # SC-breakdown columns are (SC, Leads, <measure>[, DNP%]) where every
+                    # column but SC is a pre-formatted string. Center-align those.
                     sc_extra_center = [c for c in fq_sc_display.columns if c != "SC"]
                     fq_sc_styled, fq_sc_config = apply_table_style(fq_sc_display, extra_center_cols=sc_extra_center)
                     st.dataframe(

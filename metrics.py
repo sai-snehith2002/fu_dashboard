@@ -272,8 +272,22 @@ def _category_sort_frame(df: pd.DataFrame, category_col: str = "Category") -> pd
 def due_today_summary(df: pd.DataFrame) -> dict:
     """
     df must already be cluster-filtered. Computes the Due Today section's
-    headline numbers exactly per spec (independent counts, not the
-    partitioned categorize() version).
+    headline numbers, all within the "came due today" population (see
+    came_due_pool -- fu_due_date_today == 1).
+
+    Each of the 4 summary boxes now shows a 3-part Due / Worked / Booked
+    reading, all computed on the SAME population that box covers (the
+    whole came-due-today pool for the top box, that outcome's leads for
+    Agreed+Another, that priority's leads for P1+P2):
+      - Due:    fu_due_date_today == 1 (already true for every row here)
+      - Worked: fu_completedat_today == 1
+      - Booked: (of Worked) order_closure_datetime_ist is not blank
+
+    Others is a straight subtraction of the top box's three numbers minus
+    Agreed+Another's three numbers, position by position (Due, Worked,
+    Booked) -- it is NOT also net of P1+P2 (a lead can be both P1/P2 and
+    Agreed+Another, so the two boxes aren't mutually exclusive; Others is
+    only ever defined relative to Agreed+Another here, per spec).
     """
     cd = came_due_pool(df)
     total_came_due = len(cd)
@@ -289,6 +303,11 @@ def due_today_summary(df: pd.DataFrame) -> dict:
     top_pending_tl = pending_by_tl.index[0] if len(pending_by_tl) else None
     top_pending_count = int(pending_by_tl.iloc[0]) if len(pending_by_tl) else 0
 
+    order_closure_filled = (
+        cd.get("order_closure_datetime_ist", pd.Series("", index=cd.index)).astype(str).str.strip() != ""
+    )
+    booked_count = int((completed_mask & order_closure_filled).sum())
+
     status = cd.get("last_follow_up_status", pd.Series("", index=cd.index)).astype(str).str.strip().str.lower()
     status_mask = status.isin(AGREED_OUTCOMES)
     agreed_another = int(status_mask.sum())
@@ -297,19 +316,22 @@ def due_today_summary(df: pd.DataFrame) -> dict:
     priority_mask = priority.isin(HIGH_PRIORITY)
     p1p2 = int(priority_mask.sum())
 
-    others = total_came_due - p1p2 - agreed_another
-
-    # Per-outcome "completed today" counts (numerator) against that same
-    # outcome's own "due today" count (denominator) -- Others mirrors the
-    # same independent/residual-subtraction convention as the counts above
-    # rather than a mutually-exclusive partition.
+    # Per-outcome/per-priority "completed today" and "booked" counts,
+    # against that same group's own "due today" count -- an independent
+    # count per group (not a mutually-exclusive partition), same
+    # convention as before.
     agreed_another_completed = int((status_mask & completed_mask).sum())
+    agreed_another_booked = int((status_mask & completed_mask & order_closure_filled).sum())
     p1p2_completed = int((priority_mask & completed_mask).sum())
-    others_completed = completed_count - agreed_another_completed - p1p2_completed
+    p1p2_booked = int((priority_mask & completed_mask & order_closure_filled).sum())
+
+    others_due = total_came_due - agreed_another
+    others_completed = completed_count - agreed_another_completed
+    others_booked = booked_count - agreed_another_booked
 
     agreed_another_pct = (agreed_another_completed / agreed_another * 100) if agreed_another else 0.0
     p1p2_pct = (p1p2_completed / p1p2 * 100) if p1p2 else 0.0
-    others_pct = (others_completed / others * 100) if others else 0.0
+    others_pct = (others_completed / others_due * 100) if others_due else 0.0
 
     return {
         "total_came_due": total_came_due,
@@ -318,14 +340,18 @@ def due_today_summary(df: pd.DataFrame) -> dict:
         "pct_completed": pct_completed,
         "top_pending_tl": top_pending_tl,
         "top_pending_count": top_pending_count,
+        "booked_count": booked_count,
         "agreed_another": agreed_another,
-        "p1p2": p1p2,
-        "others": others,
         "agreed_another_completed": agreed_another_completed,
+        "agreed_another_booked": agreed_another_booked,
         "agreed_another_pct": agreed_another_pct,
+        "p1p2": p1p2,
         "p1p2_completed": p1p2_completed,
+        "p1p2_booked": p1p2_booked,
         "p1p2_pct": p1p2_pct,
+        "others": others_due,
         "others_completed": others_completed,
+        "others_booked": others_booked,
         "others_pct": others_pct,
     }
 
