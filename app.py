@@ -1,3 +1,27 @@
+"""
+app.py
+======
+FollowUp Dashboard — Streamlit build.
+
+Run with:
+    streamlit run app.py
+
+Reads the CSV produced by data_pull.py (default: followup_dashboard.csv in
+this same folder), re-applies the same normalisation data_pull.py used
+(so dtypes survive the CSV round-trip), lets the person pick a city/cluster
+from a button-row list in the sidebar (or "Pan-India" for every cluster
+combined -- no Python-level hardcoding of which city is shown), and
+renders:
+  - Card 1 (City snapshot): Meetings done / Closed on spot /
+    Eligible for follow-ups / No audio notes
+  - Due Today section: completion %, pending + top-pending TL, the
+    Agreed+Another / P1+P2 / Others split, and a click-driven
+    TL -> SC -> Lead drill-down (click a table row to go one level deeper;
+    click the section header to open/close the drill-down itself).
+
+All the actual math lives in metrics.py, kept free of Streamlit calls so it
+stays testable on its own.
+"""
 from __future__ import annotations
 
 import os

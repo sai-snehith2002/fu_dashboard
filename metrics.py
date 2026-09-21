@@ -1,3 +1,13 @@
+"""
+metrics.py
+==========
+Pure data-crunching functions for the FollowUp Streamlit dashboard.
+
+Deliberately has no Streamlit import: every function here takes a
+DataFrame and returns a DataFrame/dict, so it can be unit-tested with
+plain pandas and reused if the UI layer changes later. app.py is the
+only place that touches st.*.
+"""
 from __future__ import annotations
 
 import pandas as pd
