@@ -95,5 +95,7 @@
   "latest_completed_at": "latest_completed_at",
   "latest_due_date": "latest_due_date",
   "fu_completedat_today": "fu_completedat_today",
-  "fu_due_date_today": "fu_due_date_today"
+  "fu_due_date_today": "fu_due_date_today",
+  "fu_overdued_at_today_flag": "fu_overdued_at_today_flag",
+  "fu_overdueat_days": "fu_overdueAt_days"
 }
